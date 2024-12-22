@@ -11,4 +11,6 @@ pub enum Error {
     ChannelFull,
     #[error("Unexpected Message type: {0}")]
     UnexpectedMessage(Message),
+    #[error("Serialization Error: {0}")]
+    SerializationError(#[from] serde_json::Error),
 }

@@ -32,12 +32,13 @@ pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Seri
 impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
     Socketeer<RxMessage, TxMessage>
 {
+    #[instrument]
     pub async fn connect(url: &str) -> Result<Socketeer<RxMessage, TxMessage>, Error> {
         rustls::crypto::ring::default_provider()
             .install_default()
             .expect("Failed to install rustls crypto provider");
         let (socket, response) = connect_async(url).await?;
-        info!("Connection Successful, connection info: {:#?}", response);
+        info!("Connection Successful, connection info: \n{:#?}", response);
         let (sink, stream) = socket.split();
         let (tx_tx, tx_rx) = mpsc::channel::<Message>(8);
         let (rx_tx, rx_rx) = broadcast::channel::<Message>(8);
@@ -63,7 +64,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         })?;
         match message {
             Message::Text(text) => {
-                info!("Received message: {:?}", text);
+                debug!("Received message: {:?}", text);
                 let message = serde_json::from_str(&text).unwrap();
                 Ok(message)
             }
@@ -71,8 +72,10 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         }
     }
 
+    #[instrument]
     pub async fn send(&self, message: TxMessage) -> Result<(), Error> {
         let message = serde_json::to_string(&message).unwrap();
+        debug!("Sending message: {:?}", message);
         self.sender
             .send(Message::Text(message.into()))
             .await
