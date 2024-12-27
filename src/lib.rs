@@ -7,13 +7,8 @@ use futures::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-
 use serde::{Deserialize, Serialize};
-use tokio::{
-    net::TcpStream,
-    sync::{broadcast, mpsc},
-};
-
+use tokio::{net::TcpStream, sync::mpsc};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, instrument};
 
@@ -23,7 +18,7 @@ type SocketSink = SplitSink<WebSocketStreamType, Message>;
 
 #[derive(Debug)]
 pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug> {
-    receiever: broadcast::Receiver<Message>,
+    receiever: mpsc::Receiver<Message>,
     sender: mpsc::Sender<Message>,
     _rx_message: std::marker::PhantomData<RxMessage>,
     _tx_message: std::marker::PhantomData<TxMessage>,
@@ -41,7 +36,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         info!("Connection Successful, connection info: \n{:#?}", response);
         let (sink, stream) = socket.split();
         let (tx_tx, tx_rx) = mpsc::channel::<Message>(8);
-        let (rx_tx, rx_rx) = broadcast::channel::<Message>(8);
+        let (rx_tx, rx_rx) = mpsc::channel::<Message>(8);
 
         tokio::spawn(async move {
             tx_loop(tx_rx, sink).await;
@@ -58,14 +53,18 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
 
     #[instrument]
     pub async fn next_message(&mut self) -> Result<RxMessage, Error> {
-        let message = self.receiever.recv().await.map_err(|err| match err {
-            broadcast::error::RecvError::Closed => Error::WebSocketClosed,
-            broadcast::error::RecvError::Lagged(_) => Error::ChannelFull,
-        })?;
+        let Some(message) = self.receiever.recv().await else {
+            return Err(Error::WebSocketClosed);
+        };
         match message {
             Message::Text(text) => {
                 debug!("Received message: {:?}", text);
                 let message = serde_json::from_str(&text).unwrap();
+                Ok(message)
+            }
+            Message::Binary(message) => {
+                debug!("Received message: {:?}", message);
+                let message = serde_json::from_slice(&message).unwrap();
                 Ok(message)
             }
             _ => Err(Error::UnexpectedMessage(message)),
@@ -101,7 +100,7 @@ async fn tx_loop(mut receiver: mpsc::Receiver<Message>, mut sink: SocketSink) {
 
 #[instrument]
 async fn rx_loop(
-    sender: broadcast::Sender<Message>,
+    sender: mpsc::Sender<Message>,
     mut stream: SocketStream,
     tx_sender: mpsc::Sender<Message>,
 ) {
@@ -121,7 +120,7 @@ async fn rx_loop(
                     break;
                 }
                 Message::Text(_) | Message::Binary(_) => {
-                    sender.send(message).unwrap();
+                    sender.send(message).await.unwrap();
                 }
                 _ => {}
             },
