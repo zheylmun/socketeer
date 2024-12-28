@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use tokio::{net::TcpStream, sync::mpsc};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+#[cfg(feature = "tracing")]
 use tracing::{debug, error, info, instrument};
 use url::Url;
 
@@ -33,7 +34,7 @@ pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Seri
 impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
     Socketeer<RxMessage, TxMessage>
 {
-    #[instrument]
+    #[cfg_attr(feature = "tracing", instrument)]
     pub async fn connect(url: &str) -> Result<Socketeer<RxMessage, TxMessage>, Error> {
         let url = Url::parse(url).map_err(|source| Error::UrlParse {
             url: url.to_string(),
@@ -42,7 +43,9 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         rustls::crypto::ring::default_provider()
             .install_default()
             .expect("Failed to install rustls crypto provider");
+        #[allow(unused_variables)]
         let (socket, response) = connect_async(url.as_str()).await?;
+        #[cfg(feature = "tracing")]
         info!("Connection Successful, connection info: \n{:#?}", response);
         let (sink, stream) = socket.split();
         let (tx_tx, tx_rx) = mpsc::channel::<Message>(8);
@@ -62,18 +65,20 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         })
     }
 
-    #[instrument]
+    #[cfg_attr(feature = "tracing", instrument)]
     pub async fn next_message(&mut self) -> Result<RxMessage, Error> {
         let Some(message) = self.receiever.recv().await else {
             return Err(Error::WebSocketClosed);
         };
         match message {
             Message::Text(text) => {
+                #[cfg(feature = "tracing")]
                 debug!("Received message: {:?}", text);
                 let message = serde_json::from_str(&text).unwrap();
                 Ok(message)
             }
             Message::Binary(message) => {
+                #[cfg(feature = "tracing")]
                 debug!("Received message: {:?}", message);
                 let message = serde_json::from_slice(&message).unwrap();
                 Ok(message)
@@ -82,9 +87,10 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         }
     }
 
-    #[instrument]
+    #[cfg_attr(feature = "tracing", instrument)]
     pub async fn send(&self, message: TxMessage) -> Result<(), Error> {
         let message = serde_json::to_string(&message).unwrap();
+        #[cfg(feature = "tracing")]
         debug!("Sending message: {:?}", message);
         self.sender
             .send(Message::Text(message.into()))
@@ -94,32 +100,37 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
     }
 }
 
-#[instrument]
+#[cfg_attr(feature = "tracing", instrument)]
 async fn tx_loop(mut receiver: mpsc::Receiver<Message>, mut sink: SocketSink) {
     while let Some(message) = receiver.recv().await {
+        #[cfg(feature = "tracing")]
         debug!("Sending message: {:?}", message);
         sink.send(message).await.unwrap();
     }
 }
 
-#[instrument]
+#[cfg_attr(feature = "tracing", instrument)]
 async fn rx_loop(
     sender: mpsc::Sender<Message>,
     mut stream: SocketStream,
     tx_sender: mpsc::Sender<Message>,
 ) {
     const PONG_BYTES: Bytes = Bytes::from_static(b"pong");
+    #[cfg(feature = "tracing")]
     info!("Starting RX loop");
     loop {
         let message = stream.next().await;
+        #[cfg(feature = "tracing")]
         debug!("Received message: {:?}", message);
         match message {
             Some(Ok(message)) => match message {
                 Message::Ping(_) => {
+                    #[cfg(feature = "tracing")]
                     debug!("Ping message received, sending Pong");
                     tx_sender.send(Message::Pong(PONG_BYTES)).await.unwrap();
                 }
                 Message::Close(_) => {
+                    #[cfg(feature = "tracing")]
                     info!("Close message received, closing RX channel");
                     break;
                 }
@@ -128,11 +139,14 @@ async fn rx_loop(
                 }
                 _ => {}
             },
+            #[allow(unused_variables)]
             Some(Err(e)) => {
+                #[cfg(feature = "tracing")]
                 error!("Error receiving message: {:?}", e);
                 break;
             }
             None => {
+                #[cfg(feature = "tracing")]
                 info!("Websocket Closed, closing rx channel");
                 break;
             }
