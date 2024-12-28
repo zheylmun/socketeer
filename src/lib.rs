@@ -159,7 +159,7 @@ mod tests {
     async fn test_connection() {
         let server_address = create_mock_server(echo_server).await;
         let _socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
-            Socketeer::connect(&format!("ws://{}", server_address))
+            Socketeer::connect(&format!("ws://{server_address}",))
                 .await
                 .unwrap();
     }
