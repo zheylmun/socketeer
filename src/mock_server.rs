@@ -20,7 +20,7 @@ pub enum EchoControlMessage {
 }
 
 /// Basic echo server that sends back messages it receives.
-/// It can also respond to pings and close the connection.
+/// It will also respond to pings and close the connection.
 /// # Errors
 /// - If the socket is closed unexpectedly
 /// - If the server cannot send a message
