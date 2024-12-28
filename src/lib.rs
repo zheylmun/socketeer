@@ -1,5 +1,8 @@
 mod error;
-use std::fmt::Debug;
+#[cfg(feature = "mocking")]
+mod mock_server;
+#[cfg(feature = "mocking")]
+pub use mock_server::{create_mock_server, echo_server, EchoControlMessage};
 
 use bytes::Bytes;
 pub use error::Error;
@@ -8,18 +11,19 @@ use futures::{
     SinkExt, StreamExt,
 };
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 use tokio::{net::TcpStream, sync::mpsc};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, instrument};
 use url::Url;
 
-pub type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>;
+pub(crate) type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type SocketStream = SplitStream<WebSocketStreamType>;
 type SocketSink = SplitSink<WebSocketStreamType, Message>;
 
 #[derive(Debug)]
 pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug> {
-    url: Url,
+    _url: Url,
     receiever: mpsc::Receiver<Message>,
     sender: mpsc::Sender<Message>,
     _rx_message: std::marker::PhantomData<RxMessage>,
@@ -50,7 +54,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         let cross_tx = tx_tx.clone();
         tokio::spawn(async move { rx_loop(rx_tx, stream, cross_tx).await });
         Ok(Socketeer {
-            url,
+            _url: url,
             receiever: rx_rx,
             sender: tx_tx,
             _rx_message: std::marker::PhantomData,
@@ -92,16 +96,9 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
 
 #[instrument]
 async fn tx_loop(mut receiver: mpsc::Receiver<Message>, mut sink: SocketSink) {
-    loop {
-        match receiver.recv().await {
-            Some(message) => {
-                debug!("Sending message: {:?}", message);
-                sink.send(message).await.unwrap();
-            }
-            None => {
-                break;
-            }
-        }
+    while let Some(message) = receiver.recv().await {
+        debug!("Sending message: {:?}", message);
+        sink.send(message).await.unwrap();
     }
 }
 
@@ -140,5 +137,24 @@ async fn rx_loop(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_server_startup() {
+        let _server_address = create_mock_server(echo_server).await;
+    }
+
+    #[tokio::test]
+    async fn test_connection() {
+        let server_address = create_mock_server(echo_server).await;
+        let _socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
     }
 }
