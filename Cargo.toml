@@ -3,6 +3,9 @@ name = "socketeer"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+mocking = []
+
 [dependencies]
 bytes = "1"
 futures = "0.3"
@@ -19,10 +22,10 @@ tokio = { version = "1", default-features = false, features = [
     "sync",
 ] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
 url = "2"
 
-[profile.dev]
+[dev-dependencies]
+socketeer = { path = ".", features = ["mocking"] }
 tokio = { version = "1", default-features = false, features = [
     "net",
     "macros",
@@ -31,3 +34,4 @@ tokio = { version = "1", default-features = false, features = [
     "time",
     "tracing",
 ] }
+tracing-subscriber = "0.3"

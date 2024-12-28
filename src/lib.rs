@@ -1,5 +1,8 @@
 mod error;
-use std::fmt::Debug;
+#[cfg(feature = "mocking")]
+mod mock_server;
+#[cfg(feature = "mocking")]
+pub use mock_server::{create_mock_server, echo_server, EchoControlMessage};
 
 use bytes::Bytes;
 pub use error::Error;
@@ -140,5 +143,24 @@ async fn rx_loop(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_server_startup() {
+        let _server_address = create_mock_server(echo_server).await;
+    }
+
+    #[tokio::test]
+    async fn test_connection() {
+        let server_address = create_mock_server(echo_server).await;
+        let _socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{}", server_address))
+                .await
+                .unwrap();
     }
 }
