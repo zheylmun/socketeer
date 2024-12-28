@@ -95,6 +95,14 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
             .unwrap();
         Ok(())
     }
+
+    #[cfg_attr(feature = "tracing", instrument)]
+    pub async fn close_connection(&self) -> Result<(), Error> {
+        #[cfg(feature = "tracing")]
+        debug!("Closing Connection");
+        self.sender.send(Message::Close(None)).await.unwrap();
+        Ok(())
+    }
 }
 
 #[cfg_attr(feature = "tracing", instrument)]
@@ -214,6 +222,22 @@ mod tests {
                 .unwrap();
         let close_request = EchoControlMessage::Close;
         socketeer.send(close_request.clone()).await.unwrap();
+        // The server will respond with a ping request, which Socketeer will transparently respond to
+        let response = socketeer.next_message().await;
+        assert!(matches!(response.unwrap_err(), Error::WebSocketClosed));
+        // TODO: Send needs to pass a one-shot and actually wait for the result
+        // let send_result = socketeer.send(close_request).await;
+        // assert!(matches!(send_result.unwrap_err(), Error::WebSocketClosed));
+    }
+
+    #[tokio::test]
+    async fn test_close_request() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        socketeer.close_connection().await.unwrap();
         // The server will respond with a ping request, which Socketeer will transparently respond to
         let response = socketeer.next_message().await;
         assert!(matches!(response.unwrap_err(), Error::WebSocketClosed));
