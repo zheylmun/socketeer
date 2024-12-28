@@ -43,6 +43,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         rustls::crypto::ring::default_provider()
             .install_default()
             .expect("Failed to install rustls crypto provider");
+        #[allow(unused_variables)]
         let (socket, response) = connect_async(url.as_str()).await?;
         #[cfg(feature = "tracing")]
         info!("Connection Successful, connection info: \n{:#?}", response);
@@ -138,6 +139,7 @@ async fn rx_loop(
                 }
                 _ => {}
             },
+            #[allow(unused_variables)]
             Some(Err(e)) => {
                 #[cfg(feature = "tracing")]
                 error!("Error receiving message: {:?}", e);
