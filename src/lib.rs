@@ -2,7 +2,7 @@ mod error;
 #[cfg(feature = "mocking")]
 mod mock_server;
 #[cfg(feature = "mocking")]
-pub use mock_server::{create_mock_server, echo_server, EchoControlMessage};
+pub use mock_server::{echo_server, get_mock_address, EchoControlMessage};
 
 use bytes::Bytes;
 pub use error::Error;
@@ -146,12 +146,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_server_startup() {
-        let _server_address = create_mock_server(echo_server).await;
+        let _server_address = get_mock_address(echo_server).await;
     }
 
     #[tokio::test]
     async fn test_connection() {
-        let server_address = create_mock_server(echo_server).await;
+        let server_address = get_mock_address(echo_server).await;
         let _socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
             Socketeer::connect(&format!("ws://{server_address}",))
                 .await
