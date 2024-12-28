@@ -197,4 +197,21 @@ mod tests {
         let received_message = socketeer.next_message().await.unwrap();
         assert_eq!(received_message, message);
     }
+
+    #[tokio::test]
+    async fn test_closed_socket() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        let close_request = EchoControlMessage::Close;
+        socketeer.send(close_request.clone()).await.unwrap();
+        // The server will respond with a ping request, which Socketeer will transparently respond to
+        let response = socketeer.next_message().await;
+        assert!(matches!(response.unwrap_err(), Error::WebSocketClosed));
+        // TODO: Send needs to pass a one-shot and actually wait for the result
+        // let send_result = socketeer.send(close_request).await;
+        // assert!(matches!(send_result.unwrap_err(), Error::WebSocketClosed));
+    }
 }
