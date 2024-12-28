@@ -170,6 +170,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_bad_url() {
+        let error: Result<Socketeer<EchoControlMessage, EchoControlMessage>, Error> =
+            Socketeer::connect(&format!("Not a URL",)).await;
+        assert!(matches!(error.unwrap_err(), Error::UrlParse { .. }));
+    }
+
+    #[tokio::test]
     async fn test_send_receive() {
         let server_address = get_mock_address(echo_server).await;
         let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
