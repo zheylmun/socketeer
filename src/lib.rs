@@ -40,9 +40,6 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
             url: url.to_string(),
             source,
         })?;
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .expect("Failed to install rustls crypto provider");
         #[allow(unused_variables)]
         let (socket, response) = connect_async(url.as_str()).await?;
         #[cfg(feature = "tracing")]
@@ -96,6 +93,14 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
             .send(Message::Text(message.into()))
             .await
             .unwrap();
+        Ok(())
+    }
+
+    #[cfg_attr(feature = "tracing", instrument)]
+    pub async fn close_connection(&self) -> Result<(), Error> {
+        #[cfg(feature = "tracing")]
+        debug!("Closing Connection");
+        self.sender.send(Message::Close(None)).await.unwrap();
         Ok(())
     }
 }
@@ -170,5 +175,74 @@ mod tests {
             Socketeer::connect(&format!("ws://{server_address}",))
                 .await
                 .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_bad_url() {
+        let error: Result<Socketeer<EchoControlMessage, EchoControlMessage>, Error> =
+            Socketeer::connect("Not a URL").await;
+        assert!(matches!(error.unwrap_err(), Error::UrlParse { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_send_receive() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received_message);
+    }
+
+    #[tokio::test]
+    async fn test_ping_request() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        let ping_request = EchoControlMessage::SendPing;
+        socketeer.send(ping_request).await.unwrap();
+        // The server will respond with a ping request, which Socketeer will transparently respond to
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(received_message, message);
+    }
+
+    #[tokio::test]
+    async fn test_closed_socket() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        let close_request = EchoControlMessage::Close;
+        socketeer.send(close_request.clone()).await.unwrap();
+        // The server will respond with a ping request, which Socketeer will transparently respond to
+        let response = socketeer.next_message().await;
+        assert!(matches!(response.unwrap_err(), Error::WebSocketClosed));
+        // TODO: Send needs to pass a one-shot and actually wait for the result
+        // let send_result = socketeer.send(close_request).await;
+        // assert!(matches!(send_result.unwrap_err(), Error::WebSocketClosed));
+    }
+
+    #[tokio::test]
+    async fn test_close_request() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        socketeer.close_connection().await.unwrap();
+        // The server will respond with a ping request, which Socketeer will transparently respond to
+        let response = socketeer.next_message().await;
+        assert!(matches!(response.unwrap_err(), Error::WebSocketClosed));
+        // TODO: Send needs to pass a one-shot and actually wait for the result
+        // let send_result = socketeer.send(close_request).await;
+        // assert!(matches!(send_result.unwrap_err(), Error::WebSocketClosed));
     }
 }

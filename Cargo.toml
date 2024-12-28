@@ -1,6 +1,6 @@
 [package]
 name = "socketeer"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Simplified websocket client based on Tokio-Tungstenite"
 authors = ["Zach Heylmun <zheylmun@gmail.com>"]
@@ -15,11 +15,10 @@ tracing = ["dep:tracing"]
 bytes = "1"
 futures = "0.3"
 futures-util = "0.3"
-rustls = { version = "0.23", features = ["ring"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 tokio = { version = "1", default-features = false, features = [
     "net",
     "macros",
