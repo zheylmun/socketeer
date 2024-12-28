@@ -1,7 +1,11 @@
 [package]
 name = "socketeer"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
+description = "Simplified websocket client based on Tokio-Tungstenite"
+authors = ["Zach Heylmun <zheylmun@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zheylmun/socketeer"
 
 [features]
 mocking = []
