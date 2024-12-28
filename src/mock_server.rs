@@ -63,7 +63,7 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<(), tungstenite::Err
 /// - If the server cannot bind to a port
 /// - If the server cannot accept a connection
 /// - If the provided handler returns an error
-pub async fn create_mock_server<F, R>(socket_handler: F) -> SocketAddr
+pub async fn get_mock_address<F, R>(socket_handler: F) -> SocketAddr
 where
     F: FnOnce(WebSocketStreamType) -> R + Send + Sync + 'static,
     R: Future<Output = Result<(), tungstenite::Error>> + Send + Sync + 'static,
