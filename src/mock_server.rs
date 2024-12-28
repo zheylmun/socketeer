@@ -1,3 +1,4 @@
+use crate::WebSocketStreamType;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -8,11 +9,11 @@ use tokio_tungstenite::{
     tungstenite::{self, Message},
     MaybeTlsStream,
 };
-
-use crate::WebSocketStreamType;
+#[cfg(feature = "tracing")]
+use tracing::debug;
 
 /// Control messages for testing with the echo server.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd)]
 pub enum EchoControlMessage {
     Message(String),
     SendPing,
@@ -29,12 +30,12 @@ pub enum EchoControlMessage {
 pub async fn echo_server(ws: WebSocketStreamType) -> Result<(), tungstenite::Error> {
     let (mut sink, mut stream) = ws.split();
     while let Some(message) = stream.next().await {
-        match message {
-            Ok(Message::Text(text)) => {
-                let message: EchoControlMessage = serde_json::from_str(&text).unwrap();
-                match message {
-                    EchoControlMessage::Message(text) => {
-                        sink.send(Message::Text(text.into())).await?;
+        match &message {
+            Ok(Message::Text(text_bytes)) => {
+                let control_message: EchoControlMessage = serde_json::from_str(text_bytes).unwrap();
+                match control_message {
+                    EchoControlMessage::Message(_) => {
+                        sink.send(message.unwrap()).await?;
                     }
                     EchoControlMessage::SendPing => {
                         sink.send(Message::Ping(Bytes::new())).await?;
@@ -45,10 +46,16 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<(), tungstenite::Err
                     }
                 }
             }
-            Ok(Message::Ping(ping)) => {
-                sink.send(Message::Pong(ping)).await.unwrap();
+            Ok(Message::Ping(_)) => {
+                sink.send(Message::Pong(Bytes::new())).await.unwrap();
+            }
+            Ok(Message::Pong(_)) => {
+                #[cfg(feature = "tracing")]
+                debug!("Received Pong");
             }
             Ok(Message::Close(_)) => {
+                #[cfg(feature = "tracing")]
+                debug!("Server received close request");
                 break;
             }
             _ => {}

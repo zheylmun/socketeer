@@ -168,4 +168,33 @@ mod tests {
                 .await
                 .unwrap();
     }
+
+    #[tokio::test]
+    async fn test_send_receive() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received_message);
+    }
+
+    #[tokio::test]
+    async fn test_ping_request() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        let ping_request = EchoControlMessage::SendPing;
+        socketeer.send(ping_request).await.unwrap();
+        // The server will respond with a ping request, which Socketeer will transparently respond to
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(received_message, message);
+    }
 }
