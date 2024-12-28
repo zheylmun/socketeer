@@ -40,9 +40,6 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
             url: url.to_string(),
             source,
         })?;
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .expect("Failed to install rustls crypto provider");
         #[allow(unused_variables)]
         let (socket, response) = connect_async(url.as_str()).await?;
         #[cfg(feature = "tracing")]
