@@ -6,7 +6,7 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 2
     steps:
       - name: "Checkout"
         uses: actions/checkout@v4
@@ -19,7 +19,7 @@ jobs:
   formatting:
     name: Check Formatting
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@v4
       # Ensure rustfmt is installed and setup problem matcher
@@ -33,7 +33,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -43,7 +43,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 2
     steps:
       - name: "Checkout"
         uses: actions/checkout@v4
@@ -61,3 +61,11 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           slug: zheylmun/socketeer
+  semver-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
