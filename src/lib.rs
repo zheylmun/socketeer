@@ -140,7 +140,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
 pub(crate) type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type SocketSink = SplitSink<WebSocketStreamType, Message>;
 
-enum SocketLoopState {
+enum LoopState {
     Running,
     Error(Error),
     Closed,
@@ -151,9 +151,9 @@ async fn socket_loop(
     mut sender: mpsc::Sender<Message>,
     socket: WebSocketStreamType,
 ) -> Result<(), Error> {
-    let mut state = SocketLoopState::Running;
+    let mut state = LoopState::Running;
     let (mut sink, mut stream) = socket.split();
-    while matches!(state, SocketLoopState::Running) {
+    while matches!(state, LoopState::Running) {
         state = select! {
             outgoing_message = receiver.recv() => send_socket_message(outgoing_message, &mut sink).await,
             incoming_message = stream.next() => socket_message_received( incoming_message,&mut sender, &mut sink).await,
@@ -161,16 +161,16 @@ async fn socket_loop(
         };
     }
     match state {
-        SocketLoopState::Error(e) => Err(e),
-        SocketLoopState::Closed => Ok(()),
-        SocketLoopState::Running => unreachable!("We only exit when closed or errored"),
+        LoopState::Error(e) => Err(e),
+        LoopState::Closed => Ok(()),
+        LoopState::Running => unreachable!("We only exit when closed or errored"),
     }
 }
 
 async fn send_socket_message(
     message: Option<TxChannelPayload>,
     sink: &mut SocketSink,
-) -> SocketLoopState {
+) -> LoopState {
     if let Some(message) = message {
         #[cfg(feature = "tracing")]
         debug!("Sending message: {:?}", message);
@@ -179,17 +179,17 @@ async fn send_socket_message(
         match message.response_tx.send(send_result) {
             Ok(()) => {
                 if socket_error {
-                    SocketLoopState::Error(Error::WebsocketClosed)
+                    LoopState::Error(Error::WebsocketClosed)
                 } else {
-                    SocketLoopState::Running
+                    LoopState::Running
                 }
             }
-            Err(_) => SocketLoopState::Error(Error::SocketeerDropped),
+            Err(_) => LoopState::Error(Error::SocketeerDropped),
         }
     } else {
         #[cfg(feature = "tracing")]
         error!("Socketeer dropped without closing connection");
-        SocketLoopState::Error(Error::SocketeerDropped)
+        LoopState::Error(Error::SocketeerDropped)
     }
 }
 
@@ -197,7 +197,7 @@ async fn socket_message_received(
     message: Option<Result<Message, tungstenite::Error>>,
     sender: &mut mpsc::Sender<Message>,
     sink: &mut SocketSink,
-) -> SocketLoopState {
+) -> LoopState {
     const PONG_BYTES: Bytes = Bytes::from_static(b"pong");
     match message {
         Some(Ok(message)) => match message {
@@ -207,45 +207,45 @@ async fn socket_message_received(
                     .await
                     .map_err(Error::from);
                 match send_result {
-                    Ok(()) => SocketLoopState::Running,
+                    Ok(()) => LoopState::Running,
                     Err(e) => {
                         #[cfg(feature = "tracing")]
                         error!("Error sending Pong: {:?}", e);
-                        SocketLoopState::Error(e)
+                        LoopState::Error(e)
                     }
                 }
             }
             Message::Close(_) => {
                 let close_result = sink.close().await;
                 match close_result {
-                    Ok(()) => SocketLoopState::Closed,
+                    Ok(()) => LoopState::Closed,
                     Err(e) => {
                         #[cfg(feature = "tracing")]
                         error!("Error sending Close: {:?}", e);
-                        SocketLoopState::Error(Error::from(e))
+                        LoopState::Error(Error::from(e))
                     }
                 }
             }
             Message::Text(_) | Message::Binary(_) => match sender.send(message).await {
-                Ok(()) => SocketLoopState::Running,
-                Err(_) => SocketLoopState::Error(Error::SocketeerDropped),
+                Ok(()) => LoopState::Running,
+                Err(_) => LoopState::Error(Error::SocketeerDropped),
             },
-            _ => SocketLoopState::Running,
+            _ => LoopState::Running,
         },
         Some(Err(e)) => {
             #[cfg(feature = "tracing")]
             error!("Error receiving message: {:?}", e);
-            SocketLoopState::Error(Error::WebsocketError(e))
+            LoopState::Error(Error::WebsocketError(e))
         }
         None => {
             #[cfg(feature = "tracing")]
             info!("Websocket Closed, closing rx channel");
-            SocketLoopState::Error(Error::WebsocketClosed)
+            LoopState::Error(Error::WebsocketClosed)
         }
     }
 }
 
-async fn send_ping(sink: &mut SocketSink) -> SocketLoopState {
+async fn send_ping(sink: &mut SocketSink) -> LoopState {
     #[cfg(feature = "tracing")]
     info!("Timeout waiting for message, sending Ping");
     let result = sink
@@ -253,11 +253,11 @@ async fn send_ping(sink: &mut SocketSink) -> SocketLoopState {
         .await
         .map_err(Error::from);
     match result {
-        Ok(()) => SocketLoopState::Running,
+        Ok(()) => LoopState::Running,
         Err(e) => {
             #[cfg(feature = "tracing")]
             error!("Error sending Ping: {:?}", e);
-            SocketLoopState::Error(e)
+            LoopState::Error(e)
         }
     }
 }
