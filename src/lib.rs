@@ -291,6 +291,7 @@ mod tests {
         assert_eq!(received_message, message);
         // We should send a ping in here
         sleep(Duration::from_millis(2200)).await;
+        // Ensure everything shuts down so we exercize the ping functionality fully
         socketeer.close_connection().await.unwrap();
     }
 
@@ -317,7 +318,7 @@ mod tests {
     #[tokio::test]
     async fn test_close_request() {
         let server_address = get_mock_address(echo_server).await;
-        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+        let socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
             Socketeer::connect(&format!("ws://{server_address}",))
                 .await
                 .unwrap();
