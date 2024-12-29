@@ -157,13 +157,13 @@ async fn socket_loop(
         state = select! {
             outgoing_message = receiver.recv() => send_socket_message(outgoing_message, &mut sink).await,
             incoming_message = stream.next() => socket_message_received( incoming_message,&mut sender, &mut sink).await,
-            _ = sleep(Duration::from_secs(2)) => send_ping(&mut sink).await,
+            () = sleep(Duration::from_secs(2)) => send_ping(&mut sink).await,
         };
     }
     match state {
         SocketLoopState::Error(e) => Err(e),
         SocketLoopState::Closed => Ok(()),
-        _ => unreachable!("We only exit when closed or errored"),
+        SocketLoopState::Running => unreachable!("We only exit when closed or errored"),
     }
 }
 
@@ -171,28 +171,25 @@ async fn send_socket_message(
     message: Option<TxChannelPayload>,
     sink: &mut SocketSink,
 ) -> SocketLoopState {
-    match message {
-        Some(message) => {
-            #[cfg(feature = "tracing")]
-            debug!("Sending message: {:?}", message);
-            let send_result = sink.send(message.message).await.map_err(Error::from);
-            let socket_error = send_result.is_err();
-            match message.response_tx.send(send_result) {
-                Ok(()) => {
-                    if socket_error {
-                        SocketLoopState::Error(Error::WebsocketClosed)
-                    } else {
-                        SocketLoopState::Running
-                    }
+    if let Some(message) = message {
+        #[cfg(feature = "tracing")]
+        debug!("Sending message: {:?}", message);
+        let send_result = sink.send(message.message).await.map_err(Error::from);
+        let socket_error = send_result.is_err();
+        match message.response_tx.send(send_result) {
+            Ok(()) => {
+                if socket_error {
+                    SocketLoopState::Error(Error::WebsocketClosed)
+                } else {
+                    SocketLoopState::Running
                 }
-                Err(_) => SocketLoopState::Error(Error::SocketeerDropped),
             }
+            Err(_) => SocketLoopState::Error(Error::SocketeerDropped),
         }
-        None => {
-            #[cfg(feature = "tracing")]
-            error!("Socketeer dropped without closing connection");
-            SocketLoopState::Error(Error::SocketeerDropped)
-        }
+    } else {
+        #[cfg(feature = "tracing")]
+        error!("Socketeer dropped without closing connection");
+        SocketLoopState::Error(Error::SocketeerDropped)
     }
 }
 
