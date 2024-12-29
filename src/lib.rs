@@ -236,9 +236,8 @@ async fn send_ping(sink: &mut SocketSink) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use tokio::time::sleep;
-
     use super::*;
+    use tokio::time::sleep;
 
     #[tokio::test]
     async fn test_server_startup() {
