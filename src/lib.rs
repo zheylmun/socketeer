@@ -130,9 +130,9 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
             })
             .await
             .map_err(|_| Error::WebSocketClosed)?;
-        let _ = rx.await.unwrap()?;
-        let _ = self.tx_handle.await.unwrap();
-        let _ = self.rx_handle.await.unwrap();
+        rx.await.unwrap()?;
+        self.tx_handle.await.unwrap();
+        self.rx_handle.await.unwrap();
         Ok(())
     }
 }
