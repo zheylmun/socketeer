@@ -224,16 +224,13 @@ async fn socket_message_received(
             }
             Message::Close(payload) => match state {
                 SocketLoopState::Running => {
-                    let send_result = sink
-                        .send(Message::Close(payload))
-                        .await
-                        .map_err(Error::from);
-                    match send_result {
-                        Ok(()) => SocketLoopState::ShuttingDown,
+                    let close_result = sink.close().await;
+                    match close_result {
+                        Ok(()) => SocketLoopState::Closed,
                         Err(e) => {
                             #[cfg(feature = "tracing")]
                             error!("Error sending Close: {:?}", e);
-                            SocketLoopState::Error(e)
+                            SocketLoopState::Error(Error::from(e))
                         }
                     }
                 }

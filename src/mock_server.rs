@@ -2,11 +2,15 @@ use crate::WebSocketStreamType;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 use std::net::SocketAddr;
+use std::{fmt::Debug, future::Future};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
-    tungstenite::{self, Message},
+    tungstenite::{
+        self,
+        protocol::{frame::coding::CloseCode, CloseFrame},
+        Message,
+    },
     MaybeTlsStream,
 };
 #[cfg(feature = "tracing")]
@@ -29,6 +33,7 @@ pub enum EchoControlMessage {
 /// - If a received message fails to deserialize
 pub async fn echo_server(ws: WebSocketStreamType) -> Result<(), tungstenite::Error> {
     let (mut sink, mut stream) = ws.split();
+    let mut shutting_down = false;
     while let Some(message) = stream.next().await {
         match &message {
             Ok(Message::Text(text_bytes)) => {
@@ -41,8 +46,12 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<(), tungstenite::Err
                         sink.send(Message::Ping(Bytes::new())).await?;
                     }
                     EchoControlMessage::Close => {
-                        sink.send(Message::Close(None)).await?;
-                        break;
+                        sink.send(Message::Close(Some(CloseFrame {
+                            code: CloseCode::Normal,
+                            reason: "".into(),
+                        })))
+                        .await?;
+                        shutting_down = true;
                     }
                 }
             }
@@ -53,7 +62,11 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<(), tungstenite::Err
                 #[cfg(feature = "tracing")]
                 debug!("Received Pong");
             }
-            Ok(Message::Close(_)) => {
+            Ok(Message::Close(payload)) => {
+                if !shutting_down {
+                    sink.close().await.unwrap();
+                    drop(stream);
+                }
                 #[cfg(feature = "tracing")]
                 debug!("Server received close request");
                 break;
