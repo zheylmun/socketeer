@@ -272,7 +272,6 @@ mod tests {
         // TODO: Send needs to pass a one-shot and actually wait for the result
         let send_result = socketeer.send(close_request).await;
         assert!(send_result.is_err());
-        println!("{:?}", send_result);
         assert!(matches!(
             send_result.unwrap_err(),
             Error::WebsocketError(..)
