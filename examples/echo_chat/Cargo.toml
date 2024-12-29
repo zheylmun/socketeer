@@ -1,0 +1,11 @@
+[package]
+name = "echo_chat"
+version = "0.0.1"
+edition = "2021"
+description = "Example of  sending and receiving messages with a websocket echo server"
+authors = ["Zach Heylmun <zheylmun@gmail.com>"]
+
+[dependencies]
+socketeer = { path = "../..", features = ["mocking", "tracing"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing-subscriber = "0.3"
