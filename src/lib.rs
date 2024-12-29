@@ -6,21 +6,18 @@ pub use mock_server::{echo_server, get_mock_address, EchoControlMessage};
 
 use bytes::Bytes;
 pub use error::Error;
-use futures::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
+use futures::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, time::Duration};
 use tokio::{
     net::TcpStream,
     select,
     sync::{mpsc, oneshot},
-    time::{sleep, timeout},
+    time::sleep,
 };
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{self, Message},
+    tungstenite::{self, protocol::CloseFrame, Message, Utf8Bytes},
     MaybeTlsStream, WebSocketStream,
 };
 #[cfg(feature = "tracing")]
@@ -138,7 +135,6 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
 }
 
 pub(crate) type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type SocketStream = SplitStream<WebSocketStreamType>;
 type SocketSink = SplitSink<WebSocketStreamType, Message>;
 
 async fn socket_loop(
@@ -185,7 +181,7 @@ async fn send_socket_message(
         }
         None => {
             #[cfg(feature = "tracing")]
-            Error!("Socketeer dropped without closing connection");
+            error!("Socketeer dropped without closing connection");
             Err(Error::SocketeerDropped)
         }
     }
