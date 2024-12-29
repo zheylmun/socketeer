@@ -33,6 +33,8 @@ pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Seri
     _url: Url,
     receiever: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
+    rx_handle: tokio::task::JoinHandle<()>,
+    tx_handle: tokio::task::JoinHandle<()>,
     _rx_message: std::marker::PhantomData<RxMessage>,
     _tx_message: std::marker::PhantomData<TxMessage>,
 }
@@ -59,15 +61,17 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         let (tx_tx, tx_rx) = mpsc::channel::<TxChannelPayload>(8);
         let (rx_tx, rx_rx) = mpsc::channel::<Message>(8);
 
-        tokio::spawn(async move {
+        let tx_handle = tokio::spawn(async move {
             tx_loop(tx_rx, sink).await;
         });
         let cross_tx = tx_tx.clone();
-        tokio::spawn(async move { rx_loop(rx_tx, stream, cross_tx).await });
+        let rx_handle = tokio::spawn(async move { rx_loop(rx_tx, stream, cross_tx).await });
         Ok(Socketeer {
             _url: url,
             receiever: rx_rx,
             sender: tx_tx,
+            rx_handle,
+            tx_handle,
             _rx_message: std::marker::PhantomData,
             _tx_message: std::marker::PhantomData,
         })
@@ -115,7 +119,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
     }
 
     #[cfg_attr(feature = "tracing", instrument)]
-    pub async fn close_connection(&self) -> Result<(), Error> {
+    pub async fn close_connection(self) -> Result<(), Error> {
         #[cfg(feature = "tracing")]
         debug!("Closing Connection");
         let (tx, rx) = oneshot::channel::<Result<(), Error>>();
@@ -126,7 +130,10 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
             })
             .await
             .map_err(|_| Error::WebSocketClosed)?;
-        rx.await.unwrap()
+        let _ = rx.await.unwrap()?;
+        let _ = self.tx_handle.await.unwrap();
+        let _ = self.rx_handle.await.unwrap();
+        Ok(())
     }
 }
 
@@ -137,7 +144,7 @@ type SocketSink = SplitSink<WebSocketStreamType, Message>;
 #[cfg_attr(feature = "tracing", instrument)]
 async fn tx_loop(mut receiver: mpsc::Receiver<TxChannelPayload>, mut sink: SocketSink) {
     loop {
-        match timeout(Duration::from_secs(3), receiver.recv()).await {
+        match timeout(Duration::from_secs(2), receiver.recv()).await {
             Ok(Some(message)) => {
                 #[cfg(feature = "tracing")]
                 debug!("Sending message: {:?}", message);
@@ -283,7 +290,7 @@ mod tests {
         let received_message = socketeer.next_message().await.unwrap();
         assert_eq!(received_message, message);
         // We should send a ping in here
-        sleep(Duration::from_millis(3250)).await;
+        sleep(Duration::from_millis(2200)).await;
         socketeer.close_connection().await.unwrap();
     }
 
@@ -315,11 +322,5 @@ mod tests {
                 .await
                 .unwrap();
         socketeer.close_connection().await.unwrap();
-        // The server will respond with a ping request, which Socketeer will transparently respond to
-        let response = socketeer.next_message().await;
-        assert!(matches!(response.unwrap_err(), Error::WebSocketClosed));
-        // TODO: Send needs to pass a one-shot and actually wait for the result
-        // let send_result = socketeer.send(close_request).await;
-        // assert!(matches!(send_result.unwrap_err(), Error::WebSocketClosed));
     }
 }
