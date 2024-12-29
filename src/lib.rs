@@ -14,10 +14,15 @@ use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, time::Duration};
 use tokio::{
     net::TcpStream,
+    select,
     sync::{mpsc, oneshot},
-    time::timeout,
+    time::{sleep, timeout},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{self, Message},
+    MaybeTlsStream, WebSocketStream,
+};
 #[cfg(feature = "tracing")]
 use tracing::{debug, error, info, instrument};
 use url::Url;
@@ -33,8 +38,7 @@ pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Seri
     _url: Url,
     receiever: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
-    rx_handle: tokio::task::JoinHandle<()>,
-    tx_handle: tokio::task::JoinHandle<()>,
+    socket_handle: tokio::task::JoinHandle<Result<(), Error>>,
     _rx_message: std::marker::PhantomData<RxMessage>,
     _tx_message: std::marker::PhantomData<TxMessage>,
 }
@@ -57,21 +61,18 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         let (socket, response) = connect_async(url.as_str()).await?;
         #[cfg(feature = "tracing")]
         info!("Connection Successful, connection info: \n{:#?}", response);
-        let (sink, stream) = socket.split();
+        //let (sink, stream) = socket.split();
         let (tx_tx, tx_rx) = mpsc::channel::<TxChannelPayload>(8);
         let (rx_tx, rx_rx) = mpsc::channel::<Message>(8);
 
-        let tx_handle = tokio::spawn(async move {
-            tx_loop(tx_rx, sink).await;
-        });
-        let cross_tx = tx_tx.clone();
-        let rx_handle = tokio::spawn(async move { rx_loop(rx_tx, stream, cross_tx).await });
+        let socket_handle = tokio::spawn(async move { socket_loop(tx_rx, rx_tx, socket).await });
+        //let cross_tx = tx_tx.clone();
+        //let rx_handle = tokio::spawn(async move { rx_loop(rx_tx, stream, cross_tx).await });
         Ok(Socketeer {
             _url: url,
             receiever: rx_rx,
             sender: tx_tx,
-            rx_handle,
-            tx_handle,
+            socket_handle,
             _rx_message: std::marker::PhantomData,
             _tx_message: std::marker::PhantomData,
         })
@@ -131,8 +132,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
             .await
             .map_err(|_| Error::WebsocketClosed)?;
         rx.await.unwrap()?;
-        self.tx_handle.await.unwrap();
-        self.rx_handle.await.unwrap();
+        self.socket_handle.await.unwrap().unwrap();
         Ok(())
     }
 }
@@ -141,98 +141,98 @@ pub(crate) type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>
 type SocketStream = SplitStream<WebSocketStreamType>;
 type SocketSink = SplitSink<WebSocketStreamType, Message>;
 
-#[cfg_attr(feature = "tracing", instrument)]
-async fn tx_loop(mut receiver: mpsc::Receiver<TxChannelPayload>, mut sink: SocketSink) {
-    loop {
-        match timeout(Duration::from_secs(2), receiver.recv()).await {
-            Ok(Some(message)) => {
-                #[cfg(feature = "tracing")]
-                debug!("Sending message: {:?}", message);
-                message
-                    .response_tx
-                    .send(sink.send(message.message).await.map_err(Error::from))
-                    .unwrap();
-            }
-            Ok(None) => {
-                #[cfg(feature = "tracing")]
-                info!("Socket closed, closing connection");
-                break;
-            }
-            Err(_) => {
-                #[cfg(feature = "tracing")]
-                info!("Timeout waiting for message, sending Ping");
-                #[allow(unused_variables)]
-                if let Err(err) = sink.send(Message::Ping(Bytes::new())).await {
-                    #[cfg(feature = "tracing")]
-                    error!("Error sending ping: {:?}", err);
-                    break;
+async fn socket_loop(
+    mut receiver: mpsc::Receiver<TxChannelPayload>,
+    mut sender: mpsc::Sender<Message>,
+    socket: WebSocketStreamType,
+) -> Result<(), Error> {
+    let mut should_run = true;
+    let mut result = Ok(());
+    let (mut sink, mut stream) = socket.split();
+    while should_run {
+        result = select! {
+            outgoing_message = receiver.recv() => send_socket_message(outgoing_message, &mut sink).await,
+            incoming_message = stream.next() => socket_message_received(&mut should_run, incoming_message,&mut sender, &mut sink).await,
+            _ = sleep(Duration::from_secs(2)) => send_ping(&mut sink).await,
+        };
+        if result.is_err() {
+            should_run = false;
+        }
+    }
+    result
+}
+
+async fn send_socket_message(
+    message: Option<TxChannelPayload>,
+    sink: &mut SocketSink,
+) -> Result<(), Error> {
+    match message {
+        Some(message) => {
+            #[cfg(feature = "tracing")]
+            debug!("Sending message: {:?}", message);
+            let send_result = sink.send(message.message).await.map_err(Error::from);
+            let socket_error = send_result.is_err();
+            match message.response_tx.send(send_result) {
+                Ok(()) => {
+                    if socket_error {
+                        Err(Error::WebsocketClosed)
+                    } else {
+                        Ok(())
+                    }
                 }
+                Err(_) => Err(Error::SocketeerDropped),
             }
+        }
+        None => {
+            #[cfg(feature = "tracing")]
+            Error!("Socketeer dropped without closing connection");
+            Err(Error::SocketeerDropped)
         }
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument)]
-async fn rx_loop(
-    sender: mpsc::Sender<Message>,
-    mut stream: SocketStream,
-    tx_sender: mpsc::Sender<TxChannelPayload>,
-) {
+async fn socket_message_received(
+    should_run: &mut bool,
+    message: Option<Result<Message, tungstenite::Error>>,
+    sender: &mut mpsc::Sender<Message>,
+    sink: &mut SocketSink,
+) -> Result<(), Error> {
     const PONG_BYTES: Bytes = Bytes::from_static(b"pong");
-    #[cfg(feature = "tracing")]
-    info!("Starting RX loop");
-    loop {
-        let message = stream.next().await;
-        #[cfg(feature = "tracing")]
-        debug!("Received message: {:?}", message);
-        match message {
-            Some(Ok(message)) => match message {
-                Message::Ping(_) => {
-                    #[cfg(feature = "tracing")]
-                    debug!("Ping message received, sending Pong");
-                    let (tx, rx) = oneshot::channel();
-                    let payload = TxChannelPayload {
-                        message: Message::Pong(PONG_BYTES),
-                        response_tx: tx,
-                    };
-                    #[allow(unused_variables)]
-                    if let Err(error) = tx_sender.send(payload).await {
-                        // If the tx task has been dropped, we can't send a response, terminate the loop
-                        #[cfg(feature = "tracing")]
-                        error!("Error sending pong: {:?}", error);
-                        break;
-                    }
-                    #[allow(unused_variables)]
-                    if let Err(error) = rx.await.unwrap() {
-                        // If the actual tx failed, we should also break the loop
-                        #[cfg(feature = "tracing")]
-                        error!("Error sending pong: {:?}", error);
-                        break;
-                    }
-                }
-                Message::Close(_) => {
-                    #[cfg(feature = "tracing")]
-                    info!("Close message received, closing RX channel");
-                    break;
-                }
-                Message::Text(_) | Message::Binary(_) => {
-                    sender.send(message).await.unwrap();
-                }
-                _ => {}
+    match message {
+        Some(Ok(message)) => match message {
+            Message::Ping(_) => sink
+                .send(Message::Pong(PONG_BYTES))
+                .await
+                .map_err(Error::from),
+            Message::Close(_) => {
+                *should_run = false;
+                Ok(())
+            }
+            Message::Text(_) | Message::Binary(_) => match sender.send(message).await {
+                Ok(()) => Ok(()),
+                Err(_) => Err(Error::SocketeerDropped),
             },
-            #[allow(unused_variables)]
-            Some(Err(e)) => {
-                #[cfg(feature = "tracing")]
-                error!("Error receiving message: {:?}", e);
-                break;
-            }
-            None => {
-                #[cfg(feature = "tracing")]
-                info!("Websocket Closed, closing rx channel");
-                break;
-            }
+            _ => Ok(()),
+        },
+        Some(Err(e)) => {
+            #[cfg(feature = "tracing")]
+            error!("Error receiving message: {:?}", e);
+            Err(Error::WebsocketError(e))
+        }
+        None => {
+            #[cfg(feature = "tracing")]
+            info!("Websocket Closed, closing rx channel");
+            Err(Error::WebsocketClosed)
         }
     }
+}
+
+async fn send_ping(sink: &mut SocketSink) -> Result<(), Error> {
+    #[cfg(feature = "tracing")]
+    info!("Timeout waiting for message, sending Ping");
+    sink.send(Message::Ping(Bytes::new()))
+        .await
+        .map_err(Error::from)
 }
 
 #[cfg(test)]
