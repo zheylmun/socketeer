@@ -123,7 +123,10 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         let (tx, rx) = oneshot::channel::<Result<(), Error>>();
         self.sender
             .send(TxChannelPayload {
-                message: Message::Close(None),
+                message: Message::Close(Some(CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: Utf8Bytes::from_static("Closing Connection"),
+                })),
                 response_tx: tx,
             })
             .await
