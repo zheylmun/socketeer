@@ -148,6 +148,7 @@ version = "0.0.1"
 dependencies = [
  "socketeer",
  "tokio",
+ "tracing",
  "tracing-subscriber",
 ]
 
