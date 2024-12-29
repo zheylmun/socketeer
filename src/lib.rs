@@ -136,7 +136,7 @@ async fn tx_loop(mut receiver: mpsc::Receiver<TxChannelPayload>, mut sink: Socke
 
         message
             .response_tx
-            .send(sink.send(message.message).await.map_err(|e| Error::from(e)))
+            .send(sink.send(message.message).await.map_err(Error::from))
             .unwrap();
     }
 }
