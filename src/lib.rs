@@ -230,6 +230,8 @@ async fn rx_loop(
 
 #[cfg(test)]
 mod tests {
+    use tokio::time::sleep;
+
     use super::*;
 
     #[tokio::test]
@@ -280,6 +282,9 @@ mod tests {
         socketeer.send(message.clone()).await.unwrap();
         let received_message = socketeer.next_message().await.unwrap();
         assert_eq!(received_message, message);
+        // We should send a ping in here
+        sleep(Duration::from_millis(3250)).await;
+        socketeer.close_connection().await.unwrap();
     }
 
     #[tokio::test]
