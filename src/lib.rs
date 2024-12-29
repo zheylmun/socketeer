@@ -11,10 +11,11 @@ use futures::{
     SinkExt, StreamExt,
 };
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::{fmt::Debug, time::Duration};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
+    time::timeout,
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 #[cfg(feature = "tracing")]
@@ -39,6 +40,11 @@ pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Seri
 impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
     Socketeer<RxMessage, TxMessage>
 {
+    /// Create a `Socketeer` connected to the provided URL.
+    /// Once connected, Socketeer manages the underlying WebSocket connection, transparently handling protocol messages.
+    /// # Errors
+    /// - If the URL cannot be parsed
+    /// - If the WebSocket connection to the requested URL fails
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn connect(url: &str) -> Result<Socketeer<RxMessage, TxMessage>, Error> {
         let url = Url::parse(url).map_err(|source| Error::UrlParse {
@@ -76,13 +82,13 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
             Message::Text(text) => {
                 #[cfg(feature = "tracing")]
                 debug!("Received message: {:?}", text);
-                let message = serde_json::from_str(&text).unwrap();
+                let message = serde_json::from_str(&text)?;
                 Ok(message)
             }
             Message::Binary(message) => {
                 #[cfg(feature = "tracing")]
                 debug!("Received message: {:?}", message);
-                let message = serde_json::from_slice(&message).unwrap();
+                let message = serde_json::from_slice(&message)?;
                 Ok(message)
             }
             _ => Err(Error::UnexpectedMessage(message)),
@@ -103,7 +109,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
                 response_tx: tx,
             })
             .await
-            .unwrap();
+            .map_err(|_| Error::WebSocketClosed)?;
         // We'll ensure that we always respond before dropping the tx channel
         rx.await.unwrap()
     }
@@ -119,7 +125,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
                 response_tx: tx,
             })
             .await
-            .unwrap();
+            .map_err(|_| Error::WebSocketClosed)?;
         rx.await.unwrap()
     }
 }
@@ -130,14 +136,32 @@ type SocketSink = SplitSink<WebSocketStreamType, Message>;
 
 #[cfg_attr(feature = "tracing", instrument)]
 async fn tx_loop(mut receiver: mpsc::Receiver<TxChannelPayload>, mut sink: SocketSink) {
-    while let Some(message) = receiver.recv().await {
-        #[cfg(feature = "tracing")]
-        debug!("Sending message: {:?}", message);
-
-        message
-            .response_tx
-            .send(sink.send(message.message).await.map_err(Error::from))
-            .unwrap();
+    loop {
+        match timeout(Duration::from_secs(3), receiver.recv()).await {
+            Ok(Some(message)) => {
+                #[cfg(feature = "tracing")]
+                debug!("Sending message: {:?}", message);
+                message
+                    .response_tx
+                    .send(sink.send(message.message).await.map_err(Error::from))
+                    .unwrap();
+            }
+            Ok(None) => {
+                #[cfg(feature = "tracing")]
+                info!("Socket closed, closing connection");
+                break;
+            }
+            Err(_) => {
+                #[cfg(feature = "tracing")]
+                info!("Timeout waiting for message, sending Ping");
+                #[allow(unused_variables)]
+                if let Err(err) = sink.send(Message::Ping(Bytes::new())).await {
+                    #[cfg(feature = "tracing")]
+                    error!("Error sending ping: {:?}", err);
+                    break;
+                }
+            }
+        }
     }
 }
 
