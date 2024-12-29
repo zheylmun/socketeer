@@ -121,8 +121,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         #[cfg(feature = "tracing")]
         debug!("Closing Connection");
         let (tx, rx) = oneshot::channel::<Result<(), Error>>();
-        let result = self
-            .sender
+        self.sender
             .send(TxChannelPayload {
                 message: Message::Close(Some(CloseFrame {
                     code: tungstenite::protocol::frame::coding::CloseCode::Normal,
@@ -130,10 +129,10 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
                 })),
                 response_tx: tx,
             })
-            .await;
-        println!("Result: {result:#?}");
+            .await
+            .map_err(|_| Error::WebsocketClosed)?;
         rx.await.unwrap()?;
-        self.socket_handle.await.unwrap().unwrap();
+        self.socket_handle.await.unwrap()?;
         Ok(())
     }
 }
@@ -144,7 +143,6 @@ type SocketSink = SplitSink<WebSocketStreamType, Message>;
 enum SocketLoopState {
     Running,
     Error(Error),
-    ShuttingDown,
     Closed,
 }
 
@@ -155,11 +153,10 @@ async fn socket_loop(
 ) -> Result<(), Error> {
     let mut state = SocketLoopState::Running;
     let (mut sink, mut stream) = socket.split();
-    while matches!(state, SocketLoopState::Running) | matches!(state, SocketLoopState::ShuttingDown)
-    {
+    while matches!(state, SocketLoopState::Running) {
         state = select! {
             outgoing_message = receiver.recv() => send_socket_message(outgoing_message, &mut sink).await,
-            incoming_message = stream.next() => socket_message_received(state, incoming_message,&mut sender, &mut sink).await,
+            incoming_message = stream.next() => socket_message_received( incoming_message,&mut sender, &mut sink).await,
             _ = sleep(Duration::from_secs(2)) => send_ping(&mut sink).await,
         };
     }
@@ -200,7 +197,6 @@ async fn send_socket_message(
 }
 
 async fn socket_message_received(
-    state: SocketLoopState,
     message: Option<Result<Message, tungstenite::Error>>,
     sender: &mut mpsc::Sender<Message>,
     sink: &mut SocketSink,
@@ -222,21 +218,17 @@ async fn socket_message_received(
                     }
                 }
             }
-            Message::Close(payload) => match state {
-                SocketLoopState::Running => {
-                    let close_result = sink.close().await;
-                    match close_result {
-                        Ok(()) => SocketLoopState::Closed,
-                        Err(e) => {
-                            #[cfg(feature = "tracing")]
-                            error!("Error sending Close: {:?}", e);
-                            SocketLoopState::Error(Error::from(e))
-                        }
+            Message::Close(_) => {
+                let close_result = sink.close().await;
+                match close_result {
+                    Ok(()) => SocketLoopState::Closed,
+                    Err(e) => {
+                        #[cfg(feature = "tracing")]
+                        error!("Error sending Close: {:?}", e);
+                        SocketLoopState::Error(Error::from(e))
                     }
                 }
-                SocketLoopState::ShuttingDown => SocketLoopState::Closed,
-                _ => unreachable!("We should never enter the loop without being in a valid state."),
-            },
+            }
             Message::Text(_) | Message::Binary(_) => match sender.send(message).await {
                 Ok(()) => SocketLoopState::Running,
                 Err(_) => SocketLoopState::Error(Error::SocketeerDropped),

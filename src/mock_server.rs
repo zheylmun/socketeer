@@ -62,7 +62,7 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<(), tungstenite::Err
                 #[cfg(feature = "tracing")]
                 debug!("Received Pong");
             }
-            Ok(Message::Close(payload)) => {
+            Ok(Message::Close(_)) => {
                 if !shutting_down {
                     sink.close().await.unwrap();
                     drop(stream);
