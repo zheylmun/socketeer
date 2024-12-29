@@ -58,13 +58,10 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         let (socket, response) = connect_async(url.as_str()).await?;
         #[cfg(feature = "tracing")]
         info!("Connection Successful, connection info: \n{:#?}", response);
-        //let (sink, stream) = socket.split();
         let (tx_tx, tx_rx) = mpsc::channel::<TxChannelPayload>(8);
         let (rx_tx, rx_rx) = mpsc::channel::<Message>(8);
 
         let socket_handle = tokio::spawn(async move { socket_loop(tx_rx, rx_tx, socket).await });
-        //let cross_tx = tx_tx.clone();
-        //let rx_handle = tokio::spawn(async move { rx_loop(rx_tx, stream, cross_tx).await });
         Ok(Socketeer {
             _url: url,
             receiever: rx_rx,
