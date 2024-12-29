@@ -80,7 +80,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn next_message(&mut self) -> Result<RxMessage, Error> {
         let Some(message) = self.receiever.recv().await else {
-            return Err(Error::WebSocketClosed);
+            return Err(Error::WebsocketClosed);
         };
         match message {
             Message::Text(text) => {
@@ -113,7 +113,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
                 response_tx: tx,
             })
             .await
-            .map_err(|_| Error::WebSocketClosed)?;
+            .map_err(|_| Error::WebsocketClosed)?;
         // We'll ensure that we always respond before dropping the tx channel
         rx.await.unwrap()
     }
@@ -129,7 +129,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
                 response_tx: tx,
             })
             .await
-            .map_err(|_| Error::WebSocketClosed)?;
+            .map_err(|_| Error::WebsocketClosed)?;
         rx.await.unwrap()?;
         self.tx_handle.await.unwrap();
         self.rx_handle.await.unwrap();
@@ -305,7 +305,7 @@ mod tests {
         let close_request = EchoControlMessage::Close;
         socketeer.send(close_request.clone()).await.unwrap();
         let response = socketeer.next_message().await;
-        assert!(matches!(response.unwrap_err(), Error::WebSocketClosed));
+        assert!(matches!(response.unwrap_err(), Error::WebsocketClosed));
         // TODO: Send needs to pass a one-shot and actually wait for the result
         let send_result = socketeer.send(close_request).await;
         assert!(send_result.is_err());
