@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 mod error;
 #[cfg(feature = "mocking")]
 mod mock_server;

@@ -31,12 +31,3 @@ url = "2"
 
 [dev-dependencies]
 socketeer = { path = ".", features = ["mocking"] }
-tokio = { version = "1", default-features = false, features = [
-    "net",
-    "macros",
-    "rt-multi-thread",
-    "sync",
-    "time",
-    "tracing",
-] }
-tracing-subscriber = "0.3"
