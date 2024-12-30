@@ -23,7 +23,7 @@ struct SocketMessage {
 async fn main() {
     // Create a Socketeer instance that connects to a fictional local server.
     let mut socketeer: Socketeer<SocketMessage, SocketMessage> =
-        Socketeer::connect(&format!("ws://127.0.0.1:80",))
+        Socketeer::connect("ws://127.0.0.1:80")
             .await
             .unwrap();
     // Send a message to the server
