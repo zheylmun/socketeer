@@ -5,7 +5,7 @@
 [![GitHub branch status](https://img.shields.io/github/checks-status/zheylmun/socketeer/main?style=for-the-badge&logo=GitHub)](https://github.com/zheylmun/socketeer/actions)
 [![Codecov](https://img.shields.io/codecov/c/github/zheylmun/socketeer?style=for-the-badge&logo=CodeCov)](https://app.codecov.io/gh/zheylmun/socketeer)
 
-`socketeer` is a simple wrapper which creates a tokio-tungstenite websocket connection and exposes a simple async API to send and receive application messages.
+`socketeer` is a small wrapper which creates a tokio-tungstenite websocket connection and exposes a simplified async API to send and receive application messages.
 It automatically handles the underlying websocket and allows for reconnection, as well as immediate handling of errors in client code.
 Currently supports only json encoded binary and text messages.
 
