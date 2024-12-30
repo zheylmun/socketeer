@@ -6,18 +6,20 @@ pub use mock_server::{echo_server, get_mock_address, EchoControlMessage};
 
 use bytes::Bytes;
 pub use error::Error;
-use futures::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
+use futures::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, time::Duration};
 use tokio::{
     net::TcpStream,
+    select,
     sync::{mpsc, oneshot},
-    time::timeout,
+    time::sleep,
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{self, protocol::CloseFrame, Message, Utf8Bytes},
+    MaybeTlsStream, WebSocketStream,
+};
 #[cfg(feature = "tracing")]
 use tracing::{debug, error, info, instrument};
 use url::Url;
@@ -33,8 +35,7 @@ pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Seri
     _url: Url,
     receiever: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
-    rx_handle: tokio::task::JoinHandle<()>,
-    tx_handle: tokio::task::JoinHandle<()>,
+    socket_handle: tokio::task::JoinHandle<Result<(), Error>>,
     _rx_message: std::marker::PhantomData<RxMessage>,
     _tx_message: std::marker::PhantomData<TxMessage>,
 }
@@ -57,21 +58,15 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         let (socket, response) = connect_async(url.as_str()).await?;
         #[cfg(feature = "tracing")]
         info!("Connection Successful, connection info: \n{:#?}", response);
-        let (sink, stream) = socket.split();
         let (tx_tx, tx_rx) = mpsc::channel::<TxChannelPayload>(8);
         let (rx_tx, rx_rx) = mpsc::channel::<Message>(8);
 
-        let tx_handle = tokio::spawn(async move {
-            tx_loop(tx_rx, sink).await;
-        });
-        let cross_tx = tx_tx.clone();
-        let rx_handle = tokio::spawn(async move { rx_loop(rx_tx, stream, cross_tx).await });
+        let socket_handle = tokio::spawn(async move { socket_loop(tx_rx, rx_tx, socket).await });
         Ok(Socketeer {
             _url: url,
             receiever: rx_rx,
             sender: tx_tx,
-            rx_handle,
-            tx_handle,
+            socket_handle,
             _rx_message: std::marker::PhantomData,
             _tx_message: std::marker::PhantomData,
         })
@@ -80,7 +75,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn next_message(&mut self) -> Result<RxMessage, Error> {
         let Some(message) = self.receiever.recv().await else {
-            return Err(Error::WebSocketClosed);
+            return Err(Error::WebsocketClosed);
         };
         match message {
             Message::Text(text) => {
@@ -113,7 +108,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
                 response_tx: tx,
             })
             .await
-            .map_err(|_| Error::WebSocketClosed)?;
+            .map_err(|_| Error::WebsocketClosed)?;
         // We'll ensure that we always respond before dropping the tx channel
         rx.await.unwrap()
     }
@@ -125,121 +120,149 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         let (tx, rx) = oneshot::channel::<Result<(), Error>>();
         self.sender
             .send(TxChannelPayload {
-                message: Message::Close(None),
+                message: Message::Close(Some(CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: Utf8Bytes::from_static("Closing Connection"),
+                })),
                 response_tx: tx,
             })
             .await
-            .map_err(|_| Error::WebSocketClosed)?;
+            .map_err(|_| Error::WebsocketClosed)?;
         rx.await.unwrap()?;
-        self.tx_handle.await.unwrap();
-        self.rx_handle.await.unwrap();
+        self.socket_handle.await.unwrap()?;
         Ok(())
     }
 }
 
 pub(crate) type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type SocketStream = SplitStream<WebSocketStreamType>;
 type SocketSink = SplitSink<WebSocketStreamType, Message>;
 
-#[cfg_attr(feature = "tracing", instrument)]
-async fn tx_loop(mut receiver: mpsc::Receiver<TxChannelPayload>, mut sink: SocketSink) {
-    loop {
-        match timeout(Duration::from_secs(2), receiver.recv()).await {
-            Ok(Some(message)) => {
-                #[cfg(feature = "tracing")]
-                debug!("Sending message: {:?}", message);
-                message
-                    .response_tx
-                    .send(sink.send(message.message).await.map_err(Error::from))
-                    .unwrap();
-            }
-            Ok(None) => {
-                #[cfg(feature = "tracing")]
-                info!("Socket closed, closing connection");
-                break;
-            }
-            Err(_) => {
-                #[cfg(feature = "tracing")]
-                info!("Timeout waiting for message, sending Ping");
-                #[allow(unused_variables)]
-                if let Err(err) = sink.send(Message::Ping(Bytes::new())).await {
-                    #[cfg(feature = "tracing")]
-                    error!("Error sending ping: {:?}", err);
-                    break;
+enum LoopState {
+    Running,
+    Error(Error),
+    Closed,
+}
+
+async fn socket_loop(
+    mut receiver: mpsc::Receiver<TxChannelPayload>,
+    mut sender: mpsc::Sender<Message>,
+    socket: WebSocketStreamType,
+) -> Result<(), Error> {
+    let mut state = LoopState::Running;
+    let (mut sink, mut stream) = socket.split();
+    while matches!(state, LoopState::Running) {
+        state = select! {
+            outgoing_message = receiver.recv() => send_socket_message(outgoing_message, &mut sink).await,
+            incoming_message = stream.next() => socket_message_received( incoming_message,&mut sender, &mut sink).await,
+            () = sleep(Duration::from_secs(2)) => send_ping(&mut sink).await,
+        };
+    }
+    match state {
+        LoopState::Error(e) => Err(e),
+        LoopState::Closed => Ok(()),
+        LoopState::Running => unreachable!("We only exit when closed or errored"),
+    }
+}
+
+async fn send_socket_message(
+    message: Option<TxChannelPayload>,
+    sink: &mut SocketSink,
+) -> LoopState {
+    if let Some(message) = message {
+        #[cfg(feature = "tracing")]
+        debug!("Sending message: {:?}", message);
+        let send_result = sink.send(message.message).await.map_err(Error::from);
+        let socket_error = send_result.is_err();
+        match message.response_tx.send(send_result) {
+            Ok(()) => {
+                if socket_error {
+                    LoopState::Error(Error::WebsocketClosed)
+                } else {
+                    LoopState::Running
                 }
             }
+            Err(_) => LoopState::Error(Error::SocketeerDropped),
+        }
+    } else {
+        #[cfg(feature = "tracing")]
+        error!("Socketeer dropped without closing connection");
+        LoopState::Error(Error::SocketeerDropped)
+    }
+}
+
+async fn socket_message_received(
+    message: Option<Result<Message, tungstenite::Error>>,
+    sender: &mut mpsc::Sender<Message>,
+    sink: &mut SocketSink,
+) -> LoopState {
+    const PONG_BYTES: Bytes = Bytes::from_static(b"pong");
+    match message {
+        Some(Ok(message)) => match message {
+            Message::Ping(_) => {
+                let send_result = sink
+                    .send(Message::Pong(PONG_BYTES))
+                    .await
+                    .map_err(Error::from);
+                match send_result {
+                    Ok(()) => LoopState::Running,
+                    Err(e) => {
+                        #[cfg(feature = "tracing")]
+                        error!("Error sending Pong: {:?}", e);
+                        LoopState::Error(e)
+                    }
+                }
+            }
+            Message::Close(_) => {
+                let close_result = sink.close().await;
+                match close_result {
+                    Ok(()) => LoopState::Closed,
+                    Err(e) => {
+                        #[cfg(feature = "tracing")]
+                        error!("Error sending Close: {:?}", e);
+                        LoopState::Error(Error::from(e))
+                    }
+                }
+            }
+            Message::Text(_) | Message::Binary(_) => match sender.send(message).await {
+                Ok(()) => LoopState::Running,
+                Err(_) => LoopState::Error(Error::SocketeerDropped),
+            },
+            _ => LoopState::Running,
+        },
+        Some(Err(e)) => {
+            #[cfg(feature = "tracing")]
+            error!("Error receiving message: {:?}", e);
+            LoopState::Error(Error::WebsocketError(e))
+        }
+        None => {
+            #[cfg(feature = "tracing")]
+            info!("Websocket Closed, closing rx channel");
+            LoopState::Error(Error::WebsocketClosed)
         }
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument)]
-async fn rx_loop(
-    sender: mpsc::Sender<Message>,
-    mut stream: SocketStream,
-    tx_sender: mpsc::Sender<TxChannelPayload>,
-) {
-    const PONG_BYTES: Bytes = Bytes::from_static(b"pong");
+async fn send_ping(sink: &mut SocketSink) -> LoopState {
     #[cfg(feature = "tracing")]
-    info!("Starting RX loop");
-    loop {
-        let message = stream.next().await;
-        #[cfg(feature = "tracing")]
-        debug!("Received message: {:?}", message);
-        match message {
-            Some(Ok(message)) => match message {
-                Message::Ping(_) => {
-                    #[cfg(feature = "tracing")]
-                    debug!("Ping message received, sending Pong");
-                    let (tx, rx) = oneshot::channel();
-                    let payload = TxChannelPayload {
-                        message: Message::Pong(PONG_BYTES),
-                        response_tx: tx,
-                    };
-                    #[allow(unused_variables)]
-                    if let Err(error) = tx_sender.send(payload).await {
-                        // If the tx task has been dropped, we can't send a response, terminate the loop
-                        #[cfg(feature = "tracing")]
-                        error!("Error sending pong: {:?}", error);
-                        break;
-                    }
-                    #[allow(unused_variables)]
-                    if let Err(error) = rx.await.unwrap() {
-                        // If the actual tx failed, we should also break the loop
-                        #[cfg(feature = "tracing")]
-                        error!("Error sending pong: {:?}", error);
-                        break;
-                    }
-                }
-                Message::Close(_) => {
-                    #[cfg(feature = "tracing")]
-                    info!("Close message received, closing RX channel");
-                    break;
-                }
-                Message::Text(_) | Message::Binary(_) => {
-                    sender.send(message).await.unwrap();
-                }
-                _ => {}
-            },
-            #[allow(unused_variables)]
-            Some(Err(e)) => {
-                #[cfg(feature = "tracing")]
-                error!("Error receiving message: {:?}", e);
-                break;
-            }
-            None => {
-                #[cfg(feature = "tracing")]
-                info!("Websocket Closed, closing rx channel");
-                break;
-            }
+    info!("Timeout waiting for message, sending Ping");
+    let result = sink
+        .send(Message::Ping(Bytes::new()))
+        .await
+        .map_err(Error::from);
+    match result {
+        Ok(()) => LoopState::Running,
+        Err(e) => {
+            #[cfg(feature = "tracing")]
+            error!("Error sending Ping: {:?}", e);
+            LoopState::Error(e)
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use tokio::time::sleep;
-
     use super::*;
+    use tokio::time::sleep;
 
     #[tokio::test]
     async fn test_server_startup() {
@@ -305,14 +328,12 @@ mod tests {
         let close_request = EchoControlMessage::Close;
         socketeer.send(close_request.clone()).await.unwrap();
         let response = socketeer.next_message().await;
-        assert!(matches!(response.unwrap_err(), Error::WebSocketClosed));
-        // TODO: Send needs to pass a one-shot and actually wait for the result
+        assert!(matches!(response.unwrap_err(), Error::WebsocketClosed));
         let send_result = socketeer.send(close_request).await;
         assert!(send_result.is_err());
-        assert!(matches!(
-            send_result.unwrap_err(),
-            Error::WebsocketError(..)
-        ));
+        let error = send_result.unwrap_err();
+        println!("Actual Error: {error:#?}");
+        assert!(matches!(error, Error::WebsocketClosed));
     }
 
     #[tokio::test]
