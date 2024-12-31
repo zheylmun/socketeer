@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 mod error;
 #[cfg(feature = "mocking")]
 mod mock_server;
@@ -143,6 +145,7 @@ enum LoopState {
     Closed,
 }
 
+#[cfg_attr(feature = "tracing", instrument)]
 async fn socket_loop(
     mut receiver: mpsc::Receiver<TxChannelPayload>,
     mut sender: mpsc::Sender<Message>,
@@ -164,6 +167,7 @@ async fn socket_loop(
     }
 }
 
+#[cfg_attr(feature = "tracing", instrument)]
 async fn send_socket_message(
     message: Option<TxChannelPayload>,
     sink: &mut SocketSink,
@@ -190,6 +194,7 @@ async fn send_socket_message(
     }
 }
 
+#[cfg_attr(feature = "tracing", instrument)]
 async fn socket_message_received(
     message: Option<Result<Message, tungstenite::Error>>,
     sender: &mut mpsc::Sender<Message>,
@@ -242,6 +247,7 @@ async fn socket_message_received(
     }
 }
 
+#[cfg_attr(feature = "tracing", instrument)]
 async fn send_ping(sink: &mut SocketSink) -> LoopState {
     #[cfg(feature = "tracing")]
     info!("Timeout waiting for message, sending Ping");
