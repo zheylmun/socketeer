@@ -115,6 +115,30 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         rx.await.unwrap()
     }
 
+    /// Consume self, closing down any remaining send/recieve, and return a new Socketeer instance if successful
+    /// This function attempts to close the connection gracefully before returning,
+    /// but will not return an error if the connection is already closed,
+    /// as its intended use is to re-establish a failed connection.
+    /// # Errors
+    /// - If a new connection cannot be established
+    #[cfg_attr(feature = "tracing", instrument)]
+    pub async fn reconnect(self) -> Result<Self, Error> {
+        let url = self.url.as_str().to_owned();
+        #[cfg(feature = "tracing")]
+        info!("Reconnecting");
+        match self.close_connection().await {
+            Ok(()) => (),
+            #[allow(unused_variables)]
+            Err(e) => {
+                #[cfg(feature = "tracing")]
+                info!("Socket Loop already stopped: {}", e);
+            }
+        }
+        #[cfg(feature = "tracing")]
+        info!("Reconnecting");
+        Self::connect(&url).await
+    }
+
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn close_connection(self) -> Result<(), Error> {
         #[cfg(feature = "tracing")]
