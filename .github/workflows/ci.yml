@@ -13,7 +13,7 @@ jobs:
       - name: "Setup Rust Toolchain"
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: "Run Tests"
-        run: cargo test --all-features
+        run: cargo test --all-features --doc
 
   # Check formatting with rustfmt
   formatting:
