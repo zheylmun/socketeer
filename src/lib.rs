@@ -34,7 +34,7 @@ struct TxChannelPayload {
 
 #[derive(Debug)]
 pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug> {
-    _url: Url,
+    url: Url,
     receiever: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
     socket_handle: tokio::task::JoinHandle<Result<(), Error>>,
@@ -65,7 +65,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
 
         let socket_handle = tokio::spawn(async move { socket_loop(tx_rx, rx_tx, socket).await });
         Ok(Socketeer {
-            _url: url,
+            url,
             receiever: rx_rx,
             sender: tx_tx,
             socket_handle,
