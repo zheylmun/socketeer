@@ -33,7 +33,11 @@ struct TxChannelPayload {
 }
 
 #[derive(Debug)]
-pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug> {
+pub struct Socketeer<
+    RxMessage: for<'a> Deserialize<'a> + Debug,
+    TxMessage: Serialize + Debug,
+    const CHANNEL_SIZE: usize = 4,
+> {
     url: Url,
     receiever: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
@@ -42,8 +46,11 @@ pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Seri
     _tx_message: std::marker::PhantomData<TxMessage>,
 }
 
-impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
-    Socketeer<RxMessage, TxMessage>
+impl<
+        RxMessage: for<'a> Deserialize<'a> + Debug,
+        TxMessage: Serialize + Debug,
+        const CHANNEL_SIZE: usize,
+    > Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>
 {
     /// Create a `Socketeer` connected to the provided URL.
     /// Once connected, Socketeer manages the underlying WebSocket connection, transparently handling protocol messages.
@@ -51,7 +58,9 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
     /// - If the URL cannot be parsed
     /// - If the WebSocket connection to the requested URL fails
     #[cfg_attr(feature = "tracing", instrument)]
-    pub async fn connect(url: &str) -> Result<Socketeer<RxMessage, TxMessage>, Error> {
+    pub async fn connect(
+        url: &str,
+    ) -> Result<Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>, Error> {
         let url = Url::parse(url).map_err(|source| Error::UrlParse {
             url: url.to_string(),
             source,
@@ -60,8 +69,9 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
         let (socket, response) = connect_async(url.as_str()).await?;
         #[cfg(feature = "tracing")]
         info!("Connection Successful, connection info: \n{:#?}", response);
-        let (tx_tx, tx_rx) = mpsc::channel::<TxChannelPayload>(8);
-        let (rx_tx, rx_rx) = mpsc::channel::<Message>(8);
+
+        let (tx_tx, tx_rx) = mpsc::channel::<TxChannelPayload>(CHANNEL_SIZE);
+        let (rx_tx, rx_rx) = mpsc::channel::<Message>(CHANNEL_SIZE);
 
         let socket_handle = tokio::spawn(async move { socket_loop(tx_rx, rx_tx, socket).await });
         Ok(Socketeer {
