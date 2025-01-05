@@ -245,12 +245,12 @@ async fn send_socket_message(
                     LoopState::Running
                 }
             }
-            Err(_) => LoopState::Error(Error::SocketeerDropped),
+            Err(_) => LoopState::Error(Error::SocketeerDroppedWithoutClosing),
         }
     } else {
         #[cfg(feature = "tracing")]
         error!("Socketeer dropped without closing connection");
-        LoopState::Error(Error::SocketeerDropped)
+        LoopState::Error(Error::SocketeerDroppedWithoutClosing)
     }
 }
 
@@ -290,7 +290,7 @@ async fn socket_message_received(
             }
             Message::Text(_) | Message::Binary(_) => match sender.send(message).await {
                 Ok(()) => LoopState::Running,
-                Err(_) => LoopState::Error(Error::SocketeerDropped),
+                Err(_) => LoopState::Error(Error::SocketeerDroppedWithoutClosing),
             },
             _ => LoopState::Running,
         },

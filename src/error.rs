@@ -21,5 +21,5 @@ pub enum Error {
     #[error("Serialization Error: {0}")]
     SerializationError(#[from] serde_json::Error),
     #[error("Socketeer dropped without closing")]
-    SocketeerDropped,
+    SocketeerDroppedWithoutClosing,
 }
