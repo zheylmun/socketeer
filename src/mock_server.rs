@@ -19,8 +19,11 @@ use tracing::debug;
 /// Control messages for testing with the echo server.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd)]
 pub enum EchoControlMessage {
+    /// Send a message which the server should echo back
     Message(String),
+    /// Request that the server send the client a ping
     SendPing,
+    /// Request that the server close the connection
     Close,
 }
 
