@@ -84,6 +84,12 @@ impl<
         })
     }
 
+    /// Wait for the next parsed message from the WebSocket connection.
+    ///
+    /// # Errors
+    ///
+    /// - If the WebSocket connection is closed or otherwise errored
+    /// - If the message cannot be deserialized
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn next_message(&mut self) -> Result<RxMessage, Error> {
         let Some(message) = self.receiever.recv().await else {
@@ -106,13 +112,20 @@ impl<
         }
     }
 
+    /// Send a message to the WebSocket connection.
+    /// This function will wait for the message to be sent before returning.
+    ///
+    /// # Errors
+    ///
+    /// - If the message cannot be serialized
+    /// - If the WebSocket connection is closed, or otherwise errored
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn send(&self, message: TxMessage) -> Result<(), Error> {
         #[cfg(feature = "tracing")]
         debug!("Sending message: {:?}", message);
 
         let (tx, rx) = oneshot::channel::<Result<(), Error>>();
-        let message = serde_json::to_string(&message).unwrap();
+        let message = serde_json::to_string(&message)?;
 
         self.sender
             .send(TxChannelPayload {
@@ -122,7 +135,10 @@ impl<
             .await
             .map_err(|_| Error::WebsocketClosed)?;
         // We'll ensure that we always respond before dropping the tx channel
-        rx.await.unwrap()
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => unreachable!("Socket loop always sends response before dropping one-shot"),
+        }
     }
 
     /// Consume self, closing down any remaining send/recieve, and return a new Socketeer instance if successful
@@ -149,6 +165,11 @@ impl<
         Self::connect(&url).await
     }
 
+    /// Close the WebSocket connection gracefully.
+    /// This function will wait for the connection to close before returning.
+    /// # Errors
+    /// - If the WebSocket connection is already closed
+    /// - If the WebSocket connection cannot be closed
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn close_connection(self) -> Result<(), Error> {
         #[cfg(feature = "tracing")]
@@ -164,9 +185,14 @@ impl<
             })
             .await
             .map_err(|_| Error::WebsocketClosed)?;
-        rx.await.unwrap()?;
-        self.socket_handle.await.unwrap()?;
-        Ok(())
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => unreachable!("Socket loop always sends response before dropping one-shot"),
+        }?;
+        match self.socket_handle.await {
+            Ok(result) => result,
+            Err(_) => unreachable!("Socket loop does not panic, and is not cancelled"),
+        }
     }
 }
 
