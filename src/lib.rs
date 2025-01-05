@@ -32,6 +32,13 @@ struct TxChannelPayload {
     response_tx: oneshot::Sender<Result<(), Error>>,
 }
 
+/// A WebSocket client that manages the connection to a WebSocket server.
+/// The client can send and receive messages, and will transparently handle protocol messages.
+/// # Type Parameters
+/// - `RxMessage`: The type of message that the client will receive from the server.
+/// - `TxMessage`: The type of message that the client will send to the server.
+/// - `CHANNEL_SIZE`: The size of the internal channels used to communicate between
+///     the task managing the WebSocket connection and the client.
 #[derive(Debug)]
 pub struct Socketeer<
     RxMessage: for<'a> Deserialize<'a> + Debug,
