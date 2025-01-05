@@ -31,7 +31,7 @@ pub enum EchoControlMessage {
 /// - If the server cannot send a message
 /// # Panics
 /// - If a received message fails to deserialize
-pub async fn echo_server(ws: WebSocketStreamType) -> Result<(), tungstenite::Error> {
+pub async fn echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::Error> {
     let (mut sink, mut stream) = ws.split();
     let mut shutting_down = false;
     while let Some(message) = stream.next().await {
@@ -74,28 +74,33 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<(), tungstenite::Err
             _ => {}
         }
     }
-    Ok(())
+    Ok(shutting_down)
 }
 
 /// Create a WebSocket server that handles a customizable set of
 /// requests and exits.
+/// If the spawned socket handler returns true, the server will exit.
 /// # Panics
 /// - If the server cannot bind to a port
 /// - If the server cannot accept a connection
 /// - If the provided handler returns an error
 pub async fn get_mock_address<F, R>(socket_handler: F) -> SocketAddr
 where
-    F: FnOnce(WebSocketStreamType) -> R + Send + Sync + 'static,
-    R: Future<Output = Result<(), tungstenite::Error>> + Send + Sync + 'static,
+    F: Fn(WebSocketStreamType) -> R + Send + Sync + 'static,
+    R: Future<Output = Result<bool, tungstenite::Error>> + Send + Sync + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let server_address = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let (tcp_stream, _socket_addr) = listener.accept().await.unwrap();
-        let ws = tokio_tungstenite::accept_async(MaybeTlsStream::Plain(tcp_stream))
-            .await
-            .unwrap();
-        socket_handler(ws).await.unwrap();
+        loop {
+            let (tcp_stream, _socket_addr) = listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(MaybeTlsStream::Plain(tcp_stream))
+                .await
+                .unwrap();
+            if socket_handler(ws).await.unwrap() {
+                break;
+            }
+        }
     });
     server_address
 }
