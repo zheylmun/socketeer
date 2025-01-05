@@ -34,7 +34,7 @@ struct TxChannelPayload {
 
 #[derive(Debug)]
 pub struct Socketeer<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug> {
-    _url: Url,
+    url: Url,
     receiever: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
     socket_handle: tokio::task::JoinHandle<Result<(), Error>>,
@@ -65,7 +65,7 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
 
         let socket_handle = tokio::spawn(async move { socket_loop(tx_rx, rx_tx, socket).await });
         Ok(Socketeer {
-            _url: url,
+            url,
             receiever: rx_rx,
             sender: tx_tx,
             socket_handle,
@@ -113,6 +113,30 @@ impl<RxMessage: for<'a> Deserialize<'a> + Debug, TxMessage: Serialize + Debug>
             .map_err(|_| Error::WebsocketClosed)?;
         // We'll ensure that we always respond before dropping the tx channel
         rx.await.unwrap()
+    }
+
+    /// Consume self, closing down any remaining send/recieve, and return a new Socketeer instance if successful
+    /// This function attempts to close the connection gracefully before returning,
+    /// but will not return an error if the connection is already closed,
+    /// as its intended use is to re-establish a failed connection.
+    /// # Errors
+    /// - If a new connection cannot be established
+    #[cfg_attr(feature = "tracing", instrument)]
+    pub async fn reconnect(self) -> Result<Self, Error> {
+        let url = self.url.as_str().to_owned();
+        #[cfg(feature = "tracing")]
+        info!("Reconnecting");
+        match self.close_connection().await {
+            Ok(()) => (),
+            #[allow(unused_variables)]
+            Err(e) => {
+                #[cfg(feature = "tracing")]
+                info!("Socket Loop already stopped: {}", e);
+            }
+        }
+        #[cfg(feature = "tracing")]
+        info!("Reconnecting");
+        Self::connect(&url).await
     }
 
     #[cfg_attr(feature = "tracing", instrument)]
@@ -321,6 +345,25 @@ mod tests {
         // We should send a ping in here
         sleep(Duration::from_millis(2200)).await;
         // Ensure everything shuts down so we exercize the ping functionality fully
+        socketeer.close_connection().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconnection() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received_message);
+        socketeer = socketeer.reconnect().await.unwrap();
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received_message);
         socketeer.close_connection().await.unwrap();
     }
 
