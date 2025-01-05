@@ -17,7 +17,7 @@ pub enum Error {
     #[error("Channel Full")]
     ChannelFull,
     #[error("Unexpected Message type: {0}")]
-    UnexpectedMessage(Message),
+    UnexpectedMessageType(Message),
     #[error("Serialization Error: {0}")]
     SerializationError(#[from] serde_json::Error),
     #[error("Socketeer dropped without closing")]

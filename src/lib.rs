@@ -108,7 +108,7 @@ impl<
                 let message = serde_json::from_slice(&message)?;
                 Ok(message)
             }
-            _ => Err(Error::UnexpectedMessage(message)),
+            _ => Err(Error::UnexpectedMessageType(message)),
         }
     }
 
