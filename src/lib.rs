@@ -349,6 +349,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_reconnection() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}",))
+                .await
+                .unwrap();
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received_message);
+        socketeer = socketeer.reconnect().await.unwrap();
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received_message);
+        socketeer.close_connection().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_closed_socket() {
         let server_address = get_mock_address(echo_server).await;
         let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
