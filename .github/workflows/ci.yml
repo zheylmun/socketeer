@@ -15,7 +15,7 @@ jobs:
       - name: "Run Tests"
         run: cargo test --all-features --doc
       - name: "Run Example"
-        run: cd examples/echo_chat && cargo run
+        run: cargo run --example echo_chat
 
   # Check formatting with rustfmt
   formatting:
