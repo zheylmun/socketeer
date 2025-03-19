@@ -6,12 +6,11 @@ use std::net::SocketAddr;
 use std::{fmt::Debug, future::Future};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
-    tungstenite::{
-        self,
-        protocol::{frame::coding::CloseCode, CloseFrame},
-        Message,
-    },
     MaybeTlsStream,
+    tungstenite::{
+        self, Message,
+        protocol::{CloseFrame, frame::coding::CloseCode},
+    },
 };
 #[cfg(feature = "tracing")]
 use tracing::debug;

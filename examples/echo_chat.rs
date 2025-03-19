@@ -1,4 +1,4 @@
-use socketeer::{echo_server, get_mock_address, EchoControlMessage, Socketeer};
+use socketeer::{EchoControlMessage, Socketeer, echo_server, get_mock_address};
 use tracing_subscriber::fmt::Subscriber;
 
 #[tokio::main]
