@@ -4,11 +4,11 @@ mod error;
 #[cfg(feature = "mocking")]
 mod mock_server;
 #[cfg(feature = "mocking")]
-pub use mock_server::{echo_server, get_mock_address, EchoControlMessage};
+pub use mock_server::{EchoControlMessage, echo_server, get_mock_address};
 
 use bytes::Bytes;
 pub use error::Error;
-use futures::{stream::SplitSink, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, time::Duration};
 use tokio::{
@@ -18,12 +18,12 @@ use tokio::{
     time::sleep,
 };
 use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{self, protocol::CloseFrame, Message, Utf8Bytes},
-    MaybeTlsStream, WebSocketStream,
+    MaybeTlsStream, WebSocketStream, connect_async,
+    tungstenite::{self, Message, Utf8Bytes, protocol::CloseFrame},
 };
+
 #[cfg(feature = "tracing")]
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, trace};
 use url::Url;
 
 #[derive(Debug)]
@@ -40,11 +40,7 @@ struct TxChannelPayload {
 /// - `CHANNEL_SIZE`: The size of the internal channels used to communicate between
 ///     the task managing the WebSocket connection and the client.
 #[derive(Debug)]
-pub struct Socketeer<
-    RxMessage: for<'a> Deserialize<'a> + Debug,
-    TxMessage: Serialize + Debug,
-    const CHANNEL_SIZE: usize = 4,
-> {
+pub struct Socketeer<RxMessage, TxMessage, const CHANNEL_SIZE: usize = 4> {
     url: Url,
     receiever: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
@@ -54,10 +50,10 @@ pub struct Socketeer<
 }
 
 impl<
-        RxMessage: for<'a> Deserialize<'a> + Debug,
-        TxMessage: Serialize + Debug,
-        const CHANNEL_SIZE: usize,
-    > Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>
+    RxMessage: for<'a> Deserialize<'a> + Debug,
+    TxMessage: Serialize + Debug,
+    const CHANNEL_SIZE: usize,
+> Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>
 {
     /// Create a `Socketeer` connected to the provided URL.
     /// Once connected, Socketeer manages the underlying WebSocket connection, transparently handling protocol messages.
@@ -75,7 +71,7 @@ impl<
         #[allow(unused_variables)]
         let (socket, response) = connect_async(url.as_str()).await?;
         #[cfg(feature = "tracing")]
-        info!("Connection Successful, connection info: \n{:#?}", response);
+        debug!("Connection Successful, connection info: \n{:#?}", response);
 
         let (tx_tx, tx_rx) = mpsc::channel::<TxChannelPayload>(CHANNEL_SIZE);
         let (rx_tx, rx_rx) = mpsc::channel::<Message>(CHANNEL_SIZE);
@@ -105,13 +101,13 @@ impl<
         match message {
             Message::Text(text) => {
                 #[cfg(feature = "tracing")]
-                debug!("Received message: {:?}", text);
+                trace!("Received text message: {:?}", text);
                 let message = serde_json::from_str(&text)?;
                 Ok(message)
             }
             Message::Binary(message) => {
                 #[cfg(feature = "tracing")]
-                debug!("Received message: {:?}", message);
+                trace!("Received binary message: {:?}", message);
                 let message = serde_json::from_slice(&message)?;
                 Ok(message)
             }
@@ -129,7 +125,7 @@ impl<
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn send(&self, message: TxMessage) -> Result<(), Error> {
         #[cfg(feature = "tracing")]
-        debug!("Sending message: {:?}", message);
+        trace!("Sending message: {:?}", message);
 
         let (tx, rx) = oneshot::channel::<Result<(), Error>>();
         let message = serde_json::to_string(&message)?;
@@ -164,11 +160,9 @@ impl<
             #[allow(unused_variables)]
             Err(e) => {
                 #[cfg(feature = "tracing")]
-                info!("Socket Loop already stopped: {}", e);
+                error!("Socket Loop already stopped: {}", e);
             }
         }
-        #[cfg(feature = "tracing")]
-        info!("Reconnecting");
         Self::connect(&url).await
     }
 
