@@ -34,11 +34,13 @@ struct TxChannelPayload {
 
 /// A WebSocket client that manages the connection to a WebSocket server.
 /// The client can send and receive messages, and will transparently handle protocol messages.
+///
 /// # Type Parameters
+///
 /// - `RxMessage`: The type of message that the client will receive from the server.
 /// - `TxMessage`: The type of message that the client will send to the server.
 /// - `CHANNEL_SIZE`: The size of the internal channels used to communicate between
-///     the task managing the WebSocket connection and the client.
+///   the task managing the WebSocket connection and the client.
 #[derive(Debug)]
 pub struct Socketeer<RxMessage, TxMessage, const CHANNEL_SIZE: usize = 4> {
     url: Url,
@@ -111,7 +113,7 @@ impl<
                 let message = serde_json::from_slice(&message)?;
                 Ok(message)
             }
-            _ => Err(Error::UnexpectedMessageType(message)),
+            _ => Err(Error::UnexpectedMessageType(Box::new(message))),
         }
     }
 

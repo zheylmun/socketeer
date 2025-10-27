@@ -23,7 +23,7 @@ pub enum Error {
     WebsocketClosed,
     /// Error thrown if a message type not handled by `socketeer` is received.
     #[error("Unexpected Message type: {0}")]
-    UnexpectedMessageType(Message),
+    UnexpectedMessageType(Box<Message>),
     /// Error thrown if the message received fails to serialize or deserialize.
     #[error("Serialization Error: {0}")]
     SerializationError(#[from] serde_json::Error),
