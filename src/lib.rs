@@ -2,16 +2,18 @@
 #![deny(missing_docs)]
 mod config;
 mod error;
+mod handler;
 #[cfg(feature = "mocking")]
 mod mock_server;
 
 pub use config::ConnectOptions;
 pub use error::Error;
+pub use handler::{ConnectionHandler, HandshakeContext, NoopHandler};
 #[cfg(feature = "mocking")]
 pub use mock_server::{EchoControlMessage, echo_server, get_mock_address};
 
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt, stream::SplitSink};
+use futures::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, time::Duration};
 use tokio::{
@@ -42,12 +44,19 @@ struct TxChannelPayload {
 ///
 /// - `RxMessage`: The type of message that the client will receive from the server.
 /// - `TxMessage`: The type of message that the client will send to the server.
+/// - `Handler`: A [`ConnectionHandler`] for lifecycle hooks (auth, subscriptions).
+///   Defaults to [`NoopHandler`] for the simple case.
 /// - `CHANNEL_SIZE`: The size of the internal channels used to communicate between
 ///   the task managing the WebSocket connection and the client.
-#[derive(Debug)]
-pub struct Socketeer<RxMessage, TxMessage, const CHANNEL_SIZE: usize = 4> {
+pub struct Socketeer<
+    RxMessage,
+    TxMessage,
+    Handler = NoopHandler,
+    const CHANNEL_SIZE: usize = 4,
+> {
     url: Url,
     options: ConnectOptions,
+    handler: Handler,
     receiver: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
     socket_handle: tokio::task::JoinHandle<Result<(), Error>>,
@@ -55,11 +64,21 @@ pub struct Socketeer<RxMessage, TxMessage, const CHANNEL_SIZE: usize = 4> {
     _tx_message: std::marker::PhantomData<TxMessage>,
 }
 
+impl<RxMessage, TxMessage, Handler, const CHANNEL_SIZE: usize> std::fmt::Debug
+    for Socketeer<RxMessage, TxMessage, Handler, CHANNEL_SIZE>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Socketeer")
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<
     RxMessage: for<'a> Deserialize<'a> + Debug,
     TxMessage: Serialize + Debug,
     const CHANNEL_SIZE: usize,
-> Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>
+> Socketeer<RxMessage, TxMessage, NoopHandler, CHANNEL_SIZE>
 {
     /// Create a `Socketeer` connected to the provided URL with default options.
     /// Once connected, Socketeer manages the underlying WebSocket connection, transparently handling protocol messages.
@@ -67,9 +86,7 @@ impl<
     /// - If the URL cannot be parsed
     /// - If the WebSocket connection to the requested URL fails
     #[cfg_attr(feature = "tracing", instrument)]
-    pub async fn connect(
-        url: &str,
-    ) -> Result<Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>, Error> {
+    pub async fn connect(url: &str) -> Result<Self, Error> {
         Self::connect_with(url, ConnectOptions::default()).await
     }
 
@@ -78,10 +95,33 @@ impl<
     /// - If the URL cannot be parsed
     /// - If the WebSocket connection to the requested URL fails
     #[cfg_attr(feature = "tracing", instrument(skip(options)))]
-    pub async fn connect_with(
+    pub async fn connect_with(url: &str, options: ConnectOptions) -> Result<Self, Error> {
+        Socketeer::connect_with_handler(url, options, NoopHandler).await
+    }
+}
+
+impl<
+    RxMessage: for<'a> Deserialize<'a> + Debug,
+    TxMessage: Serialize + Debug,
+    Handler: ConnectionHandler,
+    const CHANNEL_SIZE: usize,
+> Socketeer<RxMessage, TxMessage, Handler, CHANNEL_SIZE>
+{
+    /// Create a `Socketeer` with a custom [`ConnectionHandler`] for lifecycle hooks.
+    ///
+    /// The handler's [`ConnectionHandler::on_connected`] method is called after the
+    /// WebSocket upgrade completes, before the socket loop starts. This is where
+    /// you should perform authentication handshakes and initial subscriptions.
+    /// # Errors
+    /// - If the URL cannot be parsed
+    /// - If the WebSocket connection to the requested URL fails
+    /// - If the handler's `on_connected` returns an error
+    #[cfg_attr(feature = "tracing", instrument(skip(options, handler)))]
+    pub async fn connect_with_handler(
         url: &str,
         options: ConnectOptions,
-    ) -> Result<Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>, Error> {
+        mut handler: Handler,
+    ) -> Result<Self, Error> {
         let url = Url::parse(url).map_err(|source| Error::UrlParse {
             url: url.to_string(),
             source,
@@ -93,6 +133,12 @@ impl<
         #[cfg(feature = "tracing")]
         debug!("Connection Successful, connection info: \n{:#?}", response);
 
+        let (mut sink, mut stream) = socket.split();
+        {
+            let mut ctx = HandshakeContext::new(&mut sink, &mut stream);
+            handler.on_connected(&mut ctx).await?;
+        }
+
         let keepalive_interval = options.keepalive_interval;
         let keepalive_message = options.custom_keepalive_message.clone();
 
@@ -100,11 +146,20 @@ impl<
         let (rx_tx, rx_rx) = mpsc::channel::<Message>(CHANNEL_SIZE);
 
         let socket_handle = tokio::spawn(async move {
-            socket_loop(tx_rx, rx_tx, socket, keepalive_interval, keepalive_message).await
+            socket_loop_split(
+                tx_rx,
+                rx_tx,
+                sink,
+                stream,
+                keepalive_interval,
+                keepalive_message,
+            )
+            .await
         });
         Ok(Socketeer {
             url,
             options,
+            handler,
             receiver: rx_rx,
             sender: tx_tx,
             socket_handle,
@@ -119,7 +174,7 @@ impl<
     ///
     /// - If the WebSocket connection is closed or otherwise errored
     /// - If the message cannot be deserialized
-    #[cfg_attr(feature = "tracing", instrument)]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn next_message(&mut self) -> Result<RxMessage, Error> {
         let Some(message) = self.receiver.recv().await else {
             return Err(Error::WebsocketClosed);
@@ -148,7 +203,7 @@ impl<
     ///
     /// - If the message cannot be serialized
     /// - If the WebSocket connection is closed, or otherwise errored
-    #[cfg_attr(feature = "tracing", instrument)]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn send(&self, message: TxMessage) -> Result<(), Error> {
         #[cfg(feature = "tracing")]
         trace!("Sending message: {:?}", message);
@@ -208,15 +263,21 @@ impl<
     /// This function attempts to close the connection gracefully before returning,
     /// but will not return an error if the connection is already closed,
     /// as its intended use is to re-establish a failed connection.
+    ///
+    /// The handler's [`ConnectionHandler::on_disconnected`] is called before closing,
+    /// and [`ConnectionHandler::on_connected`] is called after reconnecting.
     /// # Errors
     /// - If a new connection cannot be established
-    #[cfg_attr(feature = "tracing", instrument)]
+    /// - If the handler's `on_connected` returns an error
     pub async fn reconnect(self) -> Result<Self, Error> {
         let url = self.url.as_str().to_owned();
         let options = self.options.clone();
+        let mut handler = self.handler;
         #[cfg(feature = "tracing")]
         info!("Reconnecting");
-        match self.close_connection().await {
+        handler.on_disconnected().await;
+        // Attempt graceful close, but don't fail if already closed
+        match send_close(&self.sender).await {
             Ok(()) => (),
             #[allow(unused_variables)]
             Err(e) => {
@@ -224,7 +285,7 @@ impl<
                 error!("Socket Loop already stopped: {}", e);
             }
         }
-        Self::connect_with(&url, options).await
+        Self::connect_with_handler(&url, options, handler).await
     }
 
     /// Close the WebSocket connection gracefully.
@@ -232,25 +293,11 @@ impl<
     /// # Errors
     /// - If the WebSocket connection is already closed
     /// - If the WebSocket connection cannot be closed
-    #[cfg_attr(feature = "tracing", instrument)]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn close_connection(self) -> Result<(), Error> {
         #[cfg(feature = "tracing")]
         debug!("Closing Connection");
-        let (tx, rx) = oneshot::channel::<Result<(), Error>>();
-        self.sender
-            .send(TxChannelPayload {
-                message: Message::Close(Some(CloseFrame {
-                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
-                    reason: Utf8Bytes::from_static("Closing Connection"),
-                })),
-                response_tx: tx,
-            })
-            .await
-            .map_err(|_| Error::WebsocketClosed)?;
-        match rx.await {
-            Ok(result) => result,
-            Err(_) => unreachable!("Socket loop always sends response before dropping one-shot"),
-        }?;
+        send_close(&self.sender).await?;
         match self.socket_handle.await {
             Ok(result) => result,
             Err(_) => unreachable!("Socket loop does not panic, and is not cancelled"),
@@ -260,6 +307,7 @@ impl<
 
 pub(crate) type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type SocketSink = SplitSink<WebSocketStreamType, Message>;
+type SocketStream = SplitStream<WebSocketStreamType>;
 
 enum LoopState {
     Running,
@@ -267,16 +315,35 @@ enum LoopState {
     Closed,
 }
 
+/// Send a close frame via the tx channel and wait for confirmation.
+async fn send_close(sender: &mpsc::Sender<TxChannelPayload>) -> Result<(), Error> {
+    let (tx, rx) = oneshot::channel::<Result<(), Error>>();
+    sender
+        .send(TxChannelPayload {
+            message: Message::Close(Some(CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: Utf8Bytes::from_static("Closing Connection"),
+            })),
+            response_tx: tx,
+        })
+        .await
+        .map_err(|_| Error::WebsocketClosed)?;
+    match rx.await {
+        Ok(result) => result,
+        Err(_) => unreachable!("Socket loop always sends response before dropping one-shot"),
+    }
+}
+
 #[cfg_attr(feature = "tracing", instrument(skip(keepalive_interval, keepalive_message)))]
-async fn socket_loop(
+async fn socket_loop_split(
     mut receiver: mpsc::Receiver<TxChannelPayload>,
     mut sender: mpsc::Sender<Message>,
-    socket: WebSocketStreamType,
+    mut sink: SocketSink,
+    mut stream: SocketStream,
     keepalive_interval: Option<Duration>,
     keepalive_message: Option<String>,
 ) -> Result<(), Error> {
     let mut state = LoopState::Running;
-    let (mut sink, mut stream) = socket.split();
     while matches!(state, LoopState::Running) {
         state = if let Some(interval) = keepalive_interval {
             select! {
