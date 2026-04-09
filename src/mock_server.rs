@@ -79,6 +79,43 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::E
     Ok(shutting_down)
 }
 
+/// Echo server that requires an auth handshake before echoing.
+///
+/// Expects the client to send `{"action":"auth","token":"test-token"}` as the first message.
+/// Responds with `{"status":"authenticated"}` on success or `{"status":"error"}` on failure.
+/// After auth, behaves like [`echo_server`].
+/// # Errors
+/// - If the socket is closed unexpectedly
+/// - If the server cannot send a message
+/// # Panics
+/// - If a received message fails to deserialize
+pub async fn auth_echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::Error> {
+    let (mut sink, mut stream) = ws.split();
+
+    // Wait for auth message
+    if let Some(Ok(Message::Text(text))) = stream.next().await {
+        #[derive(serde::Deserialize)]
+        struct AuthMsg {
+            action: String,
+            token: String,
+        }
+        if let Ok(auth) = serde_json::from_str::<AuthMsg>(&text) {
+            if auth.action == "auth" && auth.token == "test-token" {
+                sink.send(Message::Text(r#"{"status":"authenticated"}"#.into()))
+                    .await?;
+            } else {
+                sink.send(Message::Text(r#"{"status":"error"}"#.into()))
+                    .await?;
+                return Ok(true);
+            }
+        }
+    }
+
+    // After auth, behave like echo_server
+    let ws = sink.reunite(stream).unwrap();
+    echo_server(ws).await
+}
+
 /// Create a WebSocket server that handles a customizable set of
 /// requests and exits.
 /// If the spawned socket handler returns true, the server will exit.

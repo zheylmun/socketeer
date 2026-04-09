@@ -10,7 +10,7 @@ pub use config::ConnectOptions;
 pub use error::Error;
 pub use handler::{ConnectionHandler, HandshakeContext, NoopHandler};
 #[cfg(feature = "mocking")]
-pub use mock_server::{EchoControlMessage, echo_server, get_mock_address};
+pub use mock_server::{EchoControlMessage, auth_echo_server, echo_server, get_mock_address};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
@@ -570,6 +570,178 @@ mod tests {
             Socketeer::connect(&format!("ws://{server_address}",))
                 .await
                 .unwrap();
+        socketeer.close_connection().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_connect_with_default_options() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect_with(
+                &format!("ws://{server_address}"),
+                ConnectOptions::default(),
+            )
+            .await
+            .unwrap();
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received_message);
+    }
+
+    #[tokio::test]
+    async fn test_send_raw_receive_raw() {
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect(&format!("ws://{server_address}"))
+                .await
+                .unwrap();
+        let raw_text = r#"{"Message":"raw hello"}"#;
+        socketeer
+            .send_raw(Message::Text(raw_text.into()))
+            .await
+            .unwrap();
+        let received = socketeer.next_raw_message().await.unwrap();
+        assert_eq!(received, Message::Text(raw_text.into()));
+    }
+
+    #[tokio::test]
+    async fn test_disabled_keepalive() {
+        let server_address = get_mock_address(echo_server).await;
+        let options = ConnectOptions {
+            keepalive_interval: None,
+            ..ConnectOptions::default()
+        };
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+            Socketeer::connect_with(&format!("ws://{server_address}"), options)
+                .await
+                .unwrap();
+        let message = EchoControlMessage::Message("Hello".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received_message = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received_message);
+    }
+
+    #[tokio::test]
+    async fn test_handler_on_connected() {
+        use serde::{Deserialize, Serialize};
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+        struct AuthResponse {
+            status: String,
+        }
+
+        struct TestAuthHandler {
+            connected_count: Arc<Mutex<u32>>,
+        }
+
+        impl ConnectionHandler for TestAuthHandler {
+            async fn on_connected(
+                &mut self,
+                ctx: &mut HandshakeContext<'_>,
+            ) -> Result<(), Error> {
+                ctx.send_text(r#"{"action":"auth","token":"test-token"}"#)
+                    .await?;
+                let response: AuthResponse = ctx.recv_json().await?;
+                assert_eq!(response.status, "authenticated");
+                let mut count = self.connected_count.lock().await;
+                *count += 1;
+                Ok(())
+            }
+        }
+
+        let connected_count = Arc::new(Mutex::new(0u32));
+        let handler = TestAuthHandler {
+            connected_count: connected_count.clone(),
+        };
+
+        let server_address = get_mock_address(auth_echo_server).await;
+        let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage, TestAuthHandler> =
+            Socketeer::connect_with_handler(
+                &format!("ws://{server_address}"),
+                ConnectOptions::default(),
+                handler,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(*connected_count.lock().await, 1);
+
+        let message = EchoControlMessage::Message("after auth".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received);
+    }
+
+    #[tokio::test]
+    async fn test_handler_reconnect() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        struct ReconnectHandler {
+            connected_count: Arc<Mutex<u32>>,
+            disconnected_count: Arc<Mutex<u32>>,
+        }
+
+        impl ConnectionHandler for ReconnectHandler {
+            async fn on_connected(
+                &mut self,
+                ctx: &mut HandshakeContext<'_>,
+            ) -> Result<(), Error> {
+                ctx.send_text(r#"{"action":"auth","token":"test-token"}"#)
+                    .await?;
+                let _response = ctx.recv_text().await?;
+                let mut count = self.connected_count.lock().await;
+                *count += 1;
+                Ok(())
+            }
+
+            async fn on_disconnected(&mut self) {
+                let mut count = self.disconnected_count.lock().await;
+                *count += 1;
+            }
+        }
+
+        let connected_count = Arc::new(Mutex::new(0u32));
+        let disconnected_count = Arc::new(Mutex::new(0u32));
+        let handler = ReconnectHandler {
+            connected_count: connected_count.clone(),
+            disconnected_count: disconnected_count.clone(),
+        };
+
+        let server_address = get_mock_address(auth_echo_server).await;
+        let mut socketeer =
+            Socketeer::<EchoControlMessage, EchoControlMessage, ReconnectHandler>::connect_with_handler(
+                &format!("ws://{server_address}"),
+                ConnectOptions::default(),
+                handler,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(*connected_count.lock().await, 1);
+        assert_eq!(*disconnected_count.lock().await, 0);
+
+        // Send a message to verify connection works
+        let message = EchoControlMessage::Message("before reconnect".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received);
+
+        // Reconnect — handler should fire again
+        socketeer = socketeer.reconnect().await.unwrap();
+
+        assert_eq!(*connected_count.lock().await, 2);
+        assert_eq!(*disconnected_count.lock().await, 1);
+
+        // Verify connection still works after reconnect
+        let message = EchoControlMessage::Message("after reconnect".to_string());
+        socketeer.send(message.clone()).await.unwrap();
+        let received = socketeer.next_message().await.unwrap();
+        assert_eq!(message, received);
+
         socketeer.close_connection().await.unwrap();
     }
 }
