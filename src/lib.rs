@@ -1,13 +1,16 @@
 #![doc = include_str!("../README.md")]
 #![deny(missing_docs)]
+mod config;
 mod error;
 #[cfg(feature = "mocking")]
 mod mock_server;
+
+pub use config::ConnectOptions;
+pub use error::Error;
 #[cfg(feature = "mocking")]
 pub use mock_server::{EchoControlMessage, echo_server, get_mock_address};
 
 use bytes::Bytes;
-pub use error::Error;
 use futures::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, time::Duration};
@@ -44,7 +47,8 @@ struct TxChannelPayload {
 #[derive(Debug)]
 pub struct Socketeer<RxMessage, TxMessage, const CHANNEL_SIZE: usize = 4> {
     url: Url,
-    receiever: mpsc::Receiver<Message>,
+    options: ConnectOptions,
+    receiver: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
     socket_handle: tokio::task::JoinHandle<Result<(), Error>>,
     _rx_message: std::marker::PhantomData<RxMessage>,
@@ -57,7 +61,7 @@ impl<
     const CHANNEL_SIZE: usize,
 > Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>
 {
-    /// Create a `Socketeer` connected to the provided URL.
+    /// Create a `Socketeer` connected to the provided URL with default options.
     /// Once connected, Socketeer manages the underlying WebSocket connection, transparently handling protocol messages.
     /// # Errors
     /// - If the URL cannot be parsed
@@ -66,22 +70,42 @@ impl<
     pub async fn connect(
         url: &str,
     ) -> Result<Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>, Error> {
+        Self::connect_with(url, ConnectOptions::default()).await
+    }
+
+    /// Create a `Socketeer` connected to the provided URL with custom connection options.
+    /// # Errors
+    /// - If the URL cannot be parsed
+    /// - If the WebSocket connection to the requested URL fails
+    #[cfg_attr(feature = "tracing", instrument(skip(options)))]
+    pub async fn connect_with(
+        url: &str,
+        options: ConnectOptions,
+    ) -> Result<Socketeer<RxMessage, TxMessage, CHANNEL_SIZE>, Error> {
         let url = Url::parse(url).map_err(|source| Error::UrlParse {
             url: url.to_string(),
             source,
         })?;
+
+        let request = options.build_request(&url)?;
         #[allow(unused_variables)]
-        let (socket, response) = connect_async(url.as_str()).await?;
+        let (socket, response) = connect_async(request).await?;
         #[cfg(feature = "tracing")]
         debug!("Connection Successful, connection info: \n{:#?}", response);
+
+        let keepalive_interval = options.keepalive_interval;
+        let keepalive_message = options.custom_keepalive_message.clone();
 
         let (tx_tx, tx_rx) = mpsc::channel::<TxChannelPayload>(CHANNEL_SIZE);
         let (rx_tx, rx_rx) = mpsc::channel::<Message>(CHANNEL_SIZE);
 
-        let socket_handle = tokio::spawn(async move { socket_loop(tx_rx, rx_tx, socket).await });
+        let socket_handle = tokio::spawn(async move {
+            socket_loop(tx_rx, rx_tx, socket, keepalive_interval, keepalive_message).await
+        });
         Ok(Socketeer {
             url,
-            receiever: rx_rx,
+            options,
+            receiver: rx_rx,
             sender: tx_tx,
             socket_handle,
             _rx_message: std::marker::PhantomData,
@@ -97,7 +121,7 @@ impl<
     /// - If the message cannot be deserialized
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn next_message(&mut self) -> Result<RxMessage, Error> {
-        let Some(message) = self.receiever.recv().await else {
+        let Some(message) = self.receiver.recv().await else {
             return Err(Error::WebsocketClosed);
         };
         match message {
@@ -146,7 +170,7 @@ impl<
         }
     }
 
-    /// Consume self, closing down any remaining send/recieve, and return a new Socketeer instance if successful
+    /// Consume self, closing down any remaining send/receive, and return a new Socketeer instance if successful.
     /// This function attempts to close the connection gracefully before returning,
     /// but will not return an error if the connection is already closed,
     /// as its intended use is to re-establish a failed connection.
@@ -155,6 +179,7 @@ impl<
     #[cfg_attr(feature = "tracing", instrument)]
     pub async fn reconnect(self) -> Result<Self, Error> {
         let url = self.url.as_str().to_owned();
+        let options = self.options.clone();
         #[cfg(feature = "tracing")]
         info!("Reconnecting");
         match self.close_connection().await {
@@ -165,7 +190,7 @@ impl<
                 error!("Socket Loop already stopped: {}", e);
             }
         }
-        Self::connect(&url).await
+        Self::connect_with(&url, options).await
     }
 
     /// Close the WebSocket connection gracefully.
@@ -208,19 +233,28 @@ enum LoopState {
     Closed,
 }
 
-#[cfg_attr(feature = "tracing", instrument)]
+#[cfg_attr(feature = "tracing", instrument(skip(keepalive_interval, keepalive_message)))]
 async fn socket_loop(
     mut receiver: mpsc::Receiver<TxChannelPayload>,
     mut sender: mpsc::Sender<Message>,
     socket: WebSocketStreamType,
+    keepalive_interval: Option<Duration>,
+    keepalive_message: Option<String>,
 ) -> Result<(), Error> {
     let mut state = LoopState::Running;
     let (mut sink, mut stream) = socket.split();
     while matches!(state, LoopState::Running) {
-        state = select! {
-            outgoing_message = receiver.recv() => send_socket_message(outgoing_message, &mut sink).await,
-            incoming_message = stream.next() => socket_message_received( incoming_message,&mut sender, &mut sink).await,
-            () = sleep(Duration::from_secs(2)) => send_ping(&mut sink).await,
+        state = if let Some(interval) = keepalive_interval {
+            select! {
+                outgoing_message = receiver.recv() => send_socket_message(outgoing_message, &mut sink).await,
+                incoming_message = stream.next() => socket_message_received(incoming_message, &mut sender, &mut sink).await,
+                () = sleep(interval) => send_keepalive(&mut sink, keepalive_message.as_deref()).await,
+            }
+        } else {
+            select! {
+                outgoing_message = receiver.recv() => send_socket_message(outgoing_message, &mut sink).await,
+                incoming_message = stream.next() => socket_message_received(incoming_message, &mut sender, &mut sink).await,
+            }
         };
     }
     match state {
@@ -311,18 +345,22 @@ async fn socket_message_received(
 }
 
 #[cfg_attr(feature = "tracing", instrument)]
-async fn send_ping(sink: &mut SocketSink) -> LoopState {
-    #[cfg(feature = "tracing")]
-    info!("Timeout waiting for message, sending Ping");
-    let result = sink
-        .send(Message::Ping(Bytes::new()))
-        .await
-        .map_err(Error::from);
+async fn send_keepalive(sink: &mut SocketSink, custom_message: Option<&str>) -> LoopState {
+    let message = if let Some(text) = custom_message {
+        #[cfg(feature = "tracing")]
+        info!("Timeout waiting for message, sending custom keepalive");
+        Message::Text(text.into())
+    } else {
+        #[cfg(feature = "tracing")]
+        info!("Timeout waiting for message, sending Ping");
+        Message::Ping(Bytes::new())
+    };
+    let result = sink.send(message).await.map_err(Error::from);
     match result {
         Ok(()) => LoopState::Running,
         Err(e) => {
             #[cfg(feature = "tracing")]
-            error!("Error sending Ping: {:?}", e);
+            error!("Error sending keepalive: {:?}", e);
             LoopState::Error(e)
         }
     }
