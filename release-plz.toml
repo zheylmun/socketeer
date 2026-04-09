@@ -1,0 +1,12 @@
+[workspace]
+# Use conventional commits for changelog generation
+changelog_config = "cliff.toml"
+# Create a git tag on release
+git_tag_enable = true
+# Create a GitHub release
+git_release_enable = true
+
+[[package]]
+name = "socketeer"
+# Changelog path
+changelog_path = "CHANGELOG.md"
