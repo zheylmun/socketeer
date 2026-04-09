@@ -170,6 +170,40 @@ impl<
         }
     }
 
+    /// Receive the next raw [`Message`] from the WebSocket connection without deserialization.
+    ///
+    /// This is useful for protocols that don't use JSON or need to inspect the raw message.
+    ///
+    /// # Errors
+    ///
+    /// - If the WebSocket connection is closed or otherwise errored
+    pub async fn next_raw_message(&mut self) -> Result<Message, Error> {
+        self.receiver.recv().await.ok_or(Error::WebsocketClosed)
+    }
+
+    /// Send a raw [`Message`] to the WebSocket connection without serialization.
+    ///
+    /// This is useful for sending non-JSON messages (e.g., plain text keepalives)
+    /// or binary data that is already encoded.
+    ///
+    /// # Errors
+    ///
+    /// - If the WebSocket connection is closed, or otherwise errored
+    pub async fn send_raw(&self, message: Message) -> Result<(), Error> {
+        let (tx, rx) = oneshot::channel::<Result<(), Error>>();
+        self.sender
+            .send(TxChannelPayload {
+                message,
+                response_tx: tx,
+            })
+            .await
+            .map_err(|_| Error::WebsocketClosed)?;
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => unreachable!("Socket loop always sends response before dropping one-shot"),
+        }
+    }
+
     /// Consume self, closing down any remaining send/receive, and return a new Socketeer instance if successful.
     /// This function attempts to close the connection gracefully before returning,
     /// but will not return an error if the connection is already closed,
