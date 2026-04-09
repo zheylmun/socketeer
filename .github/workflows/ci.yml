@@ -15,7 +15,7 @@ jobs:
       - name: "Run Tests"
         run: cargo test --all-features --doc
       - name: "Run Example"
-        run: cargo run --example echo_chat
+        run: cargo run --example echo_chat --all-features
 
   # Check formatting with rustfmt
   formatting:
@@ -63,6 +63,15 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           slug: zheylmun/socketeer
+  # Audit dependencies for security advisories and license compliance
+  cargo-deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
   semver-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 6

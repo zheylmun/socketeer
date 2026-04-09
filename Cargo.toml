@@ -2,6 +2,7 @@
 name = "socketeer"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Simplified websocket client based on Tokio-Tungstenite"
 authors = ["Zach Heylmun <zheylmun@gmail.com>"]
 license = "MIT OR Apache-2.0"
@@ -29,7 +30,10 @@ tokio = { version = "1", default-features = false, features = [
 tracing = { version = "0.1", optional = true }
 url = "2"
 
+[[example]]
+name = "echo_chat"
+required-features = ["mocking"]
+
 [dev-dependencies]
-socketeer = { path = ".", features = ["mocking", "tracing"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing-subscriber = "0.3"

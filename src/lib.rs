@@ -328,7 +328,7 @@ async fn send_ping(sink: &mut SocketSink) -> LoopState {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mocking"))]
 mod tests {
     use super::*;
     use tokio::time::sleep;
