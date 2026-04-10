@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: "Checkout"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: "Setup Rust Toolchain"
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: "Run Tests"
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # Ensure rustfmt is installed and setup problem matcher
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo clippy --all-features --tests --benches -- -Dclippy::all -Dclippy::pedantic
 
@@ -48,7 +48,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: "Checkout"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: "Setup Rust Toolchain"
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: "Install cargo-llvm-cov"
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   semver-checks:
@@ -77,6 +77,6 @@ jobs:
     timeout-minutes: 6
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
