@@ -46,7 +46,7 @@ impl<'a> HandshakeContext<'a> {
             };
             match msg.map_err(Error::WebsocketError)? {
                 Message::Text(text) => return Ok(text.to_string()),
-                Message::Ping(_) | Message::Pong(_) => {},
+                Message::Ping(_) | Message::Pong(_) => {}
                 other => return Err(Error::UnexpectedMessageType(Box::new(other))),
             }
         }

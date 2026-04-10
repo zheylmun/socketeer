@@ -48,12 +48,7 @@ struct TxChannelPayload {
 ///   Defaults to [`NoopHandler`] for the simple case.
 /// - `CHANNEL_SIZE`: The size of the internal channels used to communicate between
 ///   the task managing the WebSocket connection and the client.
-pub struct Socketeer<
-    RxMessage,
-    TxMessage,
-    Handler = NoopHandler,
-    const CHANNEL_SIZE: usize = 4,
-> {
+pub struct Socketeer<RxMessage, TxMessage, Handler = NoopHandler, const CHANNEL_SIZE: usize = 4> {
     url: Url,
     options: ConnectOptions,
     handler: Handler,
@@ -334,7 +329,10 @@ async fn send_close(sender: &mpsc::Sender<TxChannelPayload>) -> Result<(), Error
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip(keepalive_interval, keepalive_message)))]
+#[cfg_attr(
+    feature = "tracing",
+    instrument(skip(keepalive_interval, keepalive_message))
+)]
 async fn socket_loop_split(
     mut receiver: mpsc::Receiver<TxChannelPayload>,
     mut sender: mpsc::Sender<Message>,
@@ -577,12 +575,9 @@ mod tests {
     async fn test_connect_with_default_options() {
         let server_address = get_mock_address(echo_server).await;
         let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
-            Socketeer::connect_with(
-                &format!("ws://{server_address}"),
-                ConnectOptions::default(),
-            )
-            .await
-            .unwrap();
+            Socketeer::connect_with(&format!("ws://{server_address}"), ConnectOptions::default())
+                .await
+                .unwrap();
         let message = EchoControlMessage::Message("Hello".to_string());
         socketeer.send(message.clone()).await.unwrap();
         let received_message = socketeer.next_message().await.unwrap();
@@ -638,10 +633,7 @@ mod tests {
         }
 
         impl ConnectionHandler for TestAuthHandler {
-            async fn on_connected(
-                &mut self,
-                ctx: &mut HandshakeContext<'_>,
-            ) -> Result<(), Error> {
+            async fn on_connected(&mut self, ctx: &mut HandshakeContext<'_>) -> Result<(), Error> {
                 ctx.send_text(r#"{"action":"auth","token":"test-token"}"#)
                     .await?;
                 let response: AuthResponse = ctx.recv_json().await?;
@@ -686,10 +678,7 @@ mod tests {
         }
 
         impl ConnectionHandler for ReconnectHandler {
-            async fn on_connected(
-                &mut self,
-                ctx: &mut HandshakeContext<'_>,
-            ) -> Result<(), Error> {
+            async fn on_connected(&mut self, ctx: &mut HandshakeContext<'_>) -> Result<(), Error> {
                 ctx.send_text(r#"{"action":"auth","token":"test-token"}"#)
                     .await?;
                 let _response = ctx.recv_text().await?;

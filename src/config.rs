@@ -35,10 +35,7 @@ impl ConnectOptions {
     ///
     /// Uses tungstenite's `IntoClientRequest` to generate a properly formed
     /// WebSocket upgrade request, then appends any extra headers.
-    pub(crate) fn build_request(
-        &self,
-        url: &Url,
-    ) -> Result<http::Request<()>, Error> {
+    pub(crate) fn build_request(&self, url: &Url) -> Result<http::Request<()>, Error> {
         let mut request = url
             .as_str()
             .into_client_request()
