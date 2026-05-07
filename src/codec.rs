@@ -323,4 +323,32 @@ mod tests {
         let frame = Message::Ping(Bytes::from_static(b"ping"));
         assert_eq!(codec.decode(&frame).unwrap(), frame);
     }
+
+    // The codecs are `Copy`, so `let _ = c.clone();` would normally be
+    // `clippy::clone_on_copy`. We explicitly want to exercise the manual Clone
+    // impls so the codec module reaches full coverage.
+    #[allow(clippy::clone_on_copy)]
+    #[test]
+    fn json_codec_debug_default_clone() {
+        let codec: JsonCodec<TestMsg, TestMsg> = JsonCodec::default();
+        let _cloned = codec.clone();
+        assert_eq!(format!("{codec:?}"), "JsonCodec");
+    }
+
+    #[cfg(feature = "msgpack")]
+    #[allow(clippy::clone_on_copy)]
+    #[test]
+    fn msgpack_codec_debug_default_clone() {
+        let codec: MsgPackCodec<TestMsg, TestMsg> = MsgPackCodec::default();
+        let _cloned = codec.clone();
+        assert_eq!(format!("{codec:?}"), "MsgPackCodec");
+    }
+
+    #[allow(clippy::clone_on_copy)]
+    #[test]
+    fn raw_codec_debug_clone() {
+        let codec = RawCodec::new();
+        let _cloned = codec.clone();
+        assert_eq!(format!("{codec:?}"), "RawCodec");
+    }
 }

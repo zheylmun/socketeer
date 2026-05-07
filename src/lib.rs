@@ -777,6 +777,192 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_extra_headers_used() {
+        // Cover ConnectOptions::build_request's loop body that copies
+        // `extra_headers` onto the upgrade request.
+        let server_address = get_mock_address(echo_server).await;
+        let mut headers = tokio_tungstenite::tungstenite::http::HeaderMap::new();
+        headers.insert("X-Test-Header", "socketeer".parse().unwrap());
+        let options = ConnectOptions {
+            extra_headers: headers,
+            ..ConnectOptions::default()
+        };
+        let mut socketeer: Socketeer<EchoJson> =
+            Socketeer::connect_with(&format!("ws://{server_address}"), options)
+                .await
+                .unwrap();
+        let message = EchoControlMessage::Message("hi".into());
+        socketeer.send(message.clone()).await.unwrap();
+        assert_eq!(socketeer.next_message().await.unwrap(), message);
+        socketeer.close_connection().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_auth_handler_bad_token() {
+        // Covers auth_echo_server's bad-token branch (sends {"status":"error"}
+        // and shuts down). The handler observes the error response, returns
+        // Ok, then a subsequent send fails because the server has closed.
+        struct BadTokenHandler;
+
+        impl<C: Codec> ConnectionHandler<C> for BadTokenHandler {
+            async fn on_connected(
+                &mut self,
+                ctx: &mut HandshakeContext<'_, C>,
+            ) -> Result<(), Error> {
+                ctx.send_text(r#"{"action":"auth","token":"WRONG"}"#)
+                    .await?;
+                let resp = ctx.recv_text().await?;
+                assert!(resp.contains("error"));
+                Ok(())
+            }
+        }
+
+        let server_address = get_mock_address(auth_echo_server).await;
+        let _socketeer: Socketeer<EchoJson, BadTokenHandler> = Socketeer::connect_with_codec(
+            &format!("ws://{server_address}"),
+            ConnectOptions::default(),
+            JsonCodec::new(),
+            BadTokenHandler,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[cfg(feature = "msgpack")]
+    #[tokio::test]
+    async fn test_msgpack_send_ping() {
+        // Covers the SendPing arm of msgpack_echo_server.
+        type EchoMsgPack = MsgPackCodec<EchoControlMessage, EchoControlMessage>;
+
+        let server_address = get_mock_address(msgpack_echo_server).await;
+        let mut socketeer: Socketeer<EchoMsgPack> =
+            Socketeer::connect(&format!("ws://{server_address}"))
+                .await
+                .unwrap();
+        socketeer.send(EchoControlMessage::SendPing).await.unwrap();
+        // Server replies with a Ping; Socketeer auto-Pongs. Round-trip a real
+        // message to confirm the connection is still alive.
+        let message = EchoControlMessage::Message("after ping".into());
+        socketeer.send(message.clone()).await.unwrap();
+        assert_eq!(socketeer.next_message().await.unwrap(), message);
+        socketeer.close_connection().await.unwrap();
+    }
+
+    #[cfg(feature = "msgpack")]
+    #[tokio::test]
+    async fn test_msgpack_close_request() {
+        // Covers the Close arm of msgpack_echo_server.
+        type EchoMsgPack = MsgPackCodec<EchoControlMessage, EchoControlMessage>;
+
+        let server_address = get_mock_address(msgpack_echo_server).await;
+        let mut socketeer: Socketeer<EchoMsgPack> =
+            Socketeer::connect(&format!("ws://{server_address}"))
+                .await
+                .unwrap();
+        socketeer.send(EchoControlMessage::Close).await.unwrap();
+        let result = socketeer.next_message().await;
+        assert!(matches!(result.unwrap_err(), Error::WebsocketClosed));
+    }
+
+    #[tokio::test]
+    async fn test_socketeer_debug_format() {
+        let server_address = get_mock_address(echo_server).await;
+        let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+            .await
+            .unwrap();
+        let formatted = format!("{socketeer:?}");
+        assert!(formatted.starts_with("Socketeer"));
+        assert!(formatted.contains("url"));
+    }
+
+    #[tokio::test]
+    async fn test_next_raw_message() {
+        // Cover Socketeer::next_raw_message (the raw-receive escape hatch).
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoJson> =
+            Socketeer::connect(&format!("ws://{server_address}"))
+                .await
+                .unwrap();
+        let message = EchoControlMessage::Message("raw recv".into());
+        socketeer.send(message).await.unwrap();
+        let frame = socketeer.next_raw_message().await.unwrap();
+        assert!(matches!(frame, Message::Text(_)));
+        socketeer.close_connection().await.unwrap();
+    }
+
+    #[cfg(feature = "msgpack")]
+    #[tokio::test]
+    async fn test_handshake_send_binary_recv_raw() {
+        // Cover HandshakeContext::send_binary by sending a pre-encoded
+        // msgpack frame from on_connected and reading the binary echo back
+        // via recv_raw.
+        struct BinaryHandshake;
+
+        type EchoMsgPack = MsgPackCodec<EchoControlMessage, EchoControlMessage>;
+
+        impl ConnectionHandler<EchoMsgPack> for BinaryHandshake {
+            async fn on_connected(
+                &mut self,
+                ctx: &mut HandshakeContext<'_, EchoMsgPack>,
+            ) -> Result<(), Error> {
+                let payload =
+                    rmp_serde::to_vec_named(&EchoControlMessage::Message("binary".into())).unwrap();
+                ctx.send_binary(payload).await?;
+                let echo = ctx.recv_raw().await?;
+                assert!(matches!(echo, Message::Binary(_)));
+                Ok(())
+            }
+        }
+
+        let server_address = get_mock_address(msgpack_echo_server).await;
+        let socketeer: Socketeer<EchoMsgPack, BinaryHandshake> = Socketeer::connect_with_codec(
+            &format!("ws://{server_address}"),
+            ConnectOptions::default(),
+            MsgPackCodec::new(),
+            BinaryHandshake,
+        )
+        .await
+        .unwrap();
+        socketeer.close_connection().await.unwrap();
+    }
+
+    #[cfg(feature = "msgpack")]
+    #[tokio::test]
+    async fn test_handshake_recv_text_rejects_binary() {
+        // Cover the non-Text branch of HandshakeContext::recv_text by pointing
+        // it at a server that only speaks binary frames.
+        struct ExpectsTextOnBinary;
+
+        type EchoMsgPack = MsgPackCodec<EchoControlMessage, EchoControlMessage>;
+
+        impl ConnectionHandler<EchoMsgPack> for ExpectsTextOnBinary {
+            async fn on_connected(
+                &mut self,
+                ctx: &mut HandshakeContext<'_, EchoMsgPack>,
+            ) -> Result<(), Error> {
+                let payload =
+                    rmp_serde::to_vec_named(&EchoControlMessage::Message("hi".into())).unwrap();
+                ctx.send_binary(payload).await?;
+                // recv_text must reject the echoed Binary frame.
+                let err = ctx.recv_text().await.unwrap_err();
+                assert!(matches!(err, Error::UnexpectedMessageType(_)));
+                Ok(())
+            }
+        }
+
+        let server_address = get_mock_address(msgpack_echo_server).await;
+        let socketeer: Socketeer<EchoMsgPack, ExpectsTextOnBinary> = Socketeer::connect_with_codec(
+            &format!("ws://{server_address}"),
+            ConnectOptions::default(),
+            MsgPackCodec::new(),
+            ExpectsTextOnBinary,
+        )
+        .await
+        .unwrap();
+        socketeer.close_connection().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_binary_custom_keepalive() {
         // The widening of custom_keepalive_message from Option<String> to
         // Option<Message> is otherwise unexercised. echo_server silently
