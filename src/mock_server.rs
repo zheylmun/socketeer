@@ -79,6 +79,56 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::E
     Ok(shutting_down)
 }
 
+/// MessagePack-flavored echo server.
+///
+/// Decodes each incoming binary frame as an [`EchoControlMessage`] via msgpack
+/// and behaves like [`echo_server`] for the embedded control message.
+/// # Errors
+/// - If the socket is closed unexpectedly
+/// - If the server cannot send a message
+/// # Panics
+/// - If a received message fails to deserialize
+#[cfg(feature = "msgpack")]
+pub async fn msgpack_echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::Error> {
+    let (mut sink, mut stream) = ws.split();
+    let mut shutting_down = false;
+    while let Some(message) = stream.next().await {
+        match message {
+            Ok(Message::Binary(bytes)) => {
+                let control_message: EchoControlMessage = rmp_serde::from_slice(&bytes).unwrap();
+                match control_message {
+                    EchoControlMessage::Message(_) => {
+                        sink.send(Message::Binary(bytes)).await?;
+                    }
+                    EchoControlMessage::SendPing => {
+                        sink.send(Message::Ping(Bytes::new())).await?;
+                    }
+                    EchoControlMessage::Close => {
+                        sink.send(Message::Close(Some(CloseFrame {
+                            code: CloseCode::Normal,
+                            reason: "".into(),
+                        })))
+                        .await?;
+                        shutting_down = true;
+                    }
+                }
+            }
+            Ok(Message::Ping(_)) => {
+                sink.send(Message::Pong(Bytes::new())).await.unwrap();
+            }
+            Ok(Message::Close(_)) => {
+                if !shutting_down {
+                    sink.close().await.unwrap();
+                    drop(stream);
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+    Ok(shutting_down)
+}
+
 /// Echo server that requires an auth handshake before echoing.
 ///
 /// Expects the client to send `{"action":"auth","token":"test-token"}` as the first message.
