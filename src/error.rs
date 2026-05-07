@@ -24,9 +24,9 @@ pub enum Error {
     /// Error thrown if a message type not handled by `socketeer` is received.
     #[error("Unexpected Message type: {0}")]
     UnexpectedMessageType(Box<Message>),
-    /// Error thrown if the message received fails to serialize or deserialize.
-    #[error("Serialization Error: {0}")]
-    SerializationError(#[from] serde_json::Error),
+    /// Error thrown if a [`crate::Codec`] fails to encode or decode a message.
+    #[error("Codec error: {0}")]
+    Codec(Box<dyn std::error::Error + Send + Sync>),
     /// Error thrown if socketeer is dropped without closing the connection.
     /// This error will be removed once async destructors are stabilized.
     /// See [issue](https://github.com/rust-lang/rust/issues/126482)

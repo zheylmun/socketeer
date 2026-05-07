@@ -1,4 +1,4 @@
-use socketeer::{EchoControlMessage, Socketeer, echo_server, get_mock_address};
+use socketeer::{EchoControlMessage, JsonCodec, Socketeer, echo_server, get_mock_address};
 use tracing_subscriber::fmt::Subscriber;
 
 #[tokio::main]
@@ -14,7 +14,8 @@ async fn main() {
     let server_address = get_mock_address(echo_server).await;
 
     // Next, we create a Socketeer instance that connects to the mock server.
-    let mut socketeer: Socketeer<EchoControlMessage, EchoControlMessage> =
+    // The codec parameter declares both the wire format and the message types.
+    let mut socketeer: Socketeer<JsonCodec<EchoControlMessage, EchoControlMessage>> =
         Socketeer::connect(&format!("ws://{server_address}",))
             .await
             .unwrap();
