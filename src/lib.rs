@@ -738,4 +738,67 @@ mod tests {
         assert_eq!(message, received);
         socketeer.close_connection().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_handler_uses_codec_driven_send_recv() {
+        // Exercises HandshakeContext::send / recv (the codec-driven path).
+        // Other handler tests only cover the raw send_text / recv_text helpers.
+        struct TypedHandshakeHandler;
+
+        impl ConnectionHandler<EchoJson> for TypedHandshakeHandler {
+            async fn on_connected(
+                &mut self,
+                ctx: &mut HandshakeContext<'_, EchoJson>,
+            ) -> Result<(), Error> {
+                ctx.send(&EchoControlMessage::Message("handshake".into()))
+                    .await?;
+                let echoed = ctx.recv().await?;
+                assert_eq!(echoed, EchoControlMessage::Message("handshake".into()));
+                Ok(())
+            }
+        }
+
+        let server_address = get_mock_address(echo_server).await;
+        let mut socketeer: Socketeer<EchoJson, TypedHandshakeHandler> =
+            Socketeer::connect_with_codec(
+                &format!("ws://{server_address}"),
+                ConnectOptions::default(),
+                JsonCodec::new(),
+                TypedHandshakeHandler,
+            )
+            .await
+            .unwrap();
+
+        // Confirm normal traffic still flows after the typed handshake.
+        let message = EchoControlMessage::Message("after handshake".into());
+        socketeer.send(message.clone()).await.unwrap();
+        assert_eq!(socketeer.next_message().await.unwrap(), message);
+        socketeer.close_connection().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_binary_custom_keepalive() {
+        // The widening of custom_keepalive_message from Option<String> to
+        // Option<Message> is otherwise unexercised. echo_server silently
+        // ignores Binary frames, so the receive queue stays clean and we can
+        // verify the connection survives a binary keepalive cycle.
+        let server_address = get_mock_address(echo_server).await;
+        let options = ConnectOptions {
+            keepalive_interval: Some(Duration::from_millis(100)),
+            custom_keepalive_message: Some(Message::Binary(Bytes::from_static(b"keepalive"))),
+            ..ConnectOptions::default()
+        };
+        let mut socketeer: Socketeer<EchoJson> =
+            Socketeer::connect_with(&format!("ws://{server_address}"), options)
+                .await
+                .unwrap();
+
+        // Wait long enough for at least a couple of keepalive ticks to fire.
+        sleep(Duration::from_millis(350)).await;
+
+        let message = EchoControlMessage::Message("post-keepalive".into());
+        socketeer.send(message.clone()).await.unwrap();
+        assert_eq!(socketeer.next_message().await.unwrap(), message);
+        socketeer.close_connection().await.unwrap();
+    }
 }

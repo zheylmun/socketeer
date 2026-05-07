@@ -201,3 +201,126 @@ impl Codec for RawCodec {
         Ok(frame.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct TestMsg {
+        id: u32,
+        name: String,
+    }
+
+    fn sample() -> TestMsg {
+        TestMsg {
+            id: 42,
+            name: "hello".into(),
+        }
+    }
+
+    #[test]
+    fn json_codec_encodes_to_text() {
+        let codec: JsonCodec<TestMsg, TestMsg> = JsonCodec::new();
+        let frame = codec.encode(&sample()).unwrap();
+        let Message::Text(text) = frame else {
+            panic!("expected Text frame, got {frame:?}");
+        };
+        assert!(text.contains("\"id\":42"));
+        assert!(text.contains("\"name\":\"hello\""));
+    }
+
+    #[test]
+    fn json_codec_round_trips_text() {
+        let codec: JsonCodec<TestMsg, TestMsg> = JsonCodec::new();
+        let frame = codec.encode(&sample()).unwrap();
+        assert_eq!(codec.decode(&frame).unwrap(), sample());
+    }
+
+    #[test]
+    fn json_codec_decodes_binary_for_back_compat() {
+        // Some servers (e.g. legacy Socketeer behavior) ship JSON inside Binary frames.
+        let codec: JsonCodec<TestMsg, TestMsg> = JsonCodec::new();
+        let bytes = serde_json::to_vec(&sample()).unwrap();
+        let decoded = codec.decode(&Message::Binary(bytes.into())).unwrap();
+        assert_eq!(decoded, sample());
+    }
+
+    #[test]
+    fn json_codec_rejects_ping_frame() {
+        let codec: JsonCodec<TestMsg, TestMsg> = JsonCodec::new();
+        let result = codec.decode(&Message::Ping(Bytes::new()));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::UnexpectedMessageType(_)
+        ));
+    }
+
+    #[test]
+    fn json_codec_surfaces_decode_failure_as_codec_error() {
+        let codec: JsonCodec<TestMsg, TestMsg> = JsonCodec::new();
+        let result = codec.decode(&Message::Text("not json".into()));
+        assert!(matches!(result.unwrap_err(), Error::Codec(_)));
+    }
+
+    #[cfg(feature = "msgpack")]
+    #[test]
+    fn msgpack_codec_encodes_to_binary() {
+        let codec: MsgPackCodec<TestMsg, TestMsg> = MsgPackCodec::new();
+        let frame = codec.encode(&sample()).unwrap();
+        assert!(matches!(frame, Message::Binary(_)));
+    }
+
+    #[cfg(feature = "msgpack")]
+    #[test]
+    fn msgpack_codec_round_trips_binary() {
+        let codec: MsgPackCodec<TestMsg, TestMsg> = MsgPackCodec::new();
+        let frame = codec.encode(&sample()).unwrap();
+        assert_eq!(codec.decode(&frame).unwrap(), sample());
+    }
+
+    #[cfg(feature = "msgpack")]
+    #[test]
+    fn msgpack_codec_rejects_text_frame() {
+        let codec: MsgPackCodec<TestMsg, TestMsg> = MsgPackCodec::new();
+        let result = codec.decode(&Message::Text("not msgpack".into()));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::UnexpectedMessageType(_)
+        ));
+    }
+
+    #[cfg(feature = "msgpack")]
+    #[test]
+    fn msgpack_codec_surfaces_decode_failure_as_codec_error() {
+        let codec: MsgPackCodec<TestMsg, TestMsg> = MsgPackCodec::new();
+        let result = codec.decode(&Message::Binary(Bytes::from_static(b"not msgpack")));
+        assert!(matches!(result.unwrap_err(), Error::Codec(_)));
+    }
+
+    #[test]
+    fn raw_codec_round_trips_text() {
+        let codec = RawCodec::new();
+        let frame = Message::Text("raw text".into());
+        assert_eq!(codec.encode(&frame).unwrap(), frame);
+        assert_eq!(codec.decode(&frame).unwrap(), frame);
+    }
+
+    #[test]
+    fn raw_codec_round_trips_binary() {
+        let codec = RawCodec::new();
+        let frame = Message::Binary(Bytes::from_static(b"raw bytes"));
+        assert_eq!(codec.encode(&frame).unwrap(), frame);
+        assert_eq!(codec.decode(&frame).unwrap(), frame);
+    }
+
+    #[test]
+    fn raw_codec_passes_protocol_frames_through() {
+        // RawCodec doesn't filter — Ping/Pong/Close round-trip unchanged.
+        let codec = RawCodec::new();
+        let frame = Message::Ping(Bytes::from_static(b"ping"));
+        assert_eq!(codec.decode(&frame).unwrap(), frame);
+    }
+}
