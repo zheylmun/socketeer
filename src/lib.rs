@@ -566,7 +566,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_raw_receive_raw() {
+    async fn test_raw_codec_message_roundtrip() {
+        // Typed send/next_message round-trip when the codec is RawCodec — the
+        // codec is identity, so frames pass through unchanged.
         let server_address = get_mock_address(echo_server).await;
         let mut socketeer: Socketeer<RawCodec> =
             Socketeer::connect(&format!("ws://{server_address}"))
@@ -908,17 +910,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_next_raw_message() {
-        // Cover Socketeer::next_raw_message (the raw-receive escape hatch).
+    async fn test_send_raw_next_raw_message() {
+        // Cover the raw send/receive escape hatches on a typed (non-RawCodec)
+        // connection: send_raw bypasses encoding, next_raw_message bypasses
+        // decoding, so we can speak frames the codec wouldn't otherwise
+        // produce or accept.
         let server_address = get_mock_address(echo_server).await;
         let mut socketeer: Socketeer<EchoJson> =
             Socketeer::connect(&format!("ws://{server_address}"))
                 .await
                 .unwrap();
-        let message = EchoControlMessage::Message("raw recv".into());
-        socketeer.send(message).await.unwrap();
+        let raw_text = r#"{"Message":"raw recv"}"#;
+        socketeer
+            .send_raw(Message::Text(raw_text.into()))
+            .await
+            .unwrap();
         let frame = socketeer.next_raw_message().await.unwrap();
-        assert!(matches!(frame, Message::Text(_)));
+        assert_eq!(frame, Message::Text(raw_text.into()));
         socketeer.close_connection().await.unwrap();
     }
 
