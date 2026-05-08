@@ -10,12 +10,14 @@ repository = "https://github.com/zheylmun/socketeer"
 
 [features]
 mocking = []
+msgpack = ["dep:rmp-serde"]
 tracing = ["dep:tracing"]
 
 [dependencies]
 bytes = "1"
 futures = "0.3"
 futures-util = "0.3"
+rmp-serde = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

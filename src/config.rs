@@ -1,5 +1,5 @@
 use std::time::Duration;
-use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http};
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest, http};
 use url::Url;
 
 use crate::Error;
@@ -15,9 +15,10 @@ pub struct ConnectOptions {
     /// Idle timeout before sending a keepalive. `None` disables keepalives entirely.
     /// Defaults to 2 seconds.
     pub keepalive_interval: Option<Duration>,
-    /// If set, send this text string as keepalive instead of a WebSocket ping frame.
-    /// Useful for APIs like Interactive Brokers that expect a custom keepalive message.
-    pub custom_keepalive_message: Option<String>,
+    /// If set, send this message as the keepalive instead of a WebSocket Ping frame.
+    /// Useful for APIs that expect a custom keepalive payload — e.g. Interactive
+    /// Brokers' literal text `tic`, or a binary heartbeat in a msgpack protocol.
+    pub custom_keepalive_message: Option<Message>,
 }
 
 impl Default for ConnectOptions {

@@ -8,8 +8,7 @@
 `socketeer` is a simplified async WebSocket client built on tokio-tungstenite. It manages the underlying connection and exposes a clean API for sending and receiving messages, with support for:
 
 - Automatic connection management with configurable keepalive
-- Type-safe JSON message serialization/deserialization via serde
-- Raw message support for non-JSON protocols
+- Pluggable codec for typed messages (`JsonCodec`, `MsgPackCodec`, `RawCodec`, or your own)
 - Custom HTTP headers on the WebSocket upgrade request
 - Connection lifecycle hooks for auth handshakes and subscriptions
 - Transparent handling of WebSocket protocol messages (ping/pong/close)
@@ -20,7 +19,7 @@
 ### Simple JSON messages
 
 ```rust no_run
-use socketeer::Socketeer;
+use socketeer::{JsonCodec, Socketeer};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SocketMessage {
@@ -29,7 +28,7 @@ struct SocketMessage {
 
 #[tokio::main]
 async fn main() {
-    let mut socketeer: Socketeer<SocketMessage, SocketMessage> =
+    let mut socketeer: Socketeer<JsonCodec<SocketMessage, SocketMessage>> =
         Socketeer::connect("ws://127.0.0.1:80")
             .await
             .unwrap();
@@ -45,10 +44,30 @@ async fn main() {
 }
 ```
 
+### `MessagePack`
+
+Enable the `msgpack` feature and use [`MsgPackCodec`] in place of [`JsonCodec`]:
+
+```rust no_run
+# #[cfg(feature = "msgpack")]
+# {
+use socketeer::{MsgPackCodec, Socketeer};
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct SocketMessage { message: String }
+
+# #[tokio::main]
+# async fn main() {
+let mut socketeer: Socketeer<MsgPackCodec<SocketMessage, SocketMessage>> =
+    Socketeer::connect("ws://127.0.0.1:80").await.unwrap();
+# }
+# }
+```
+
 ### Custom headers and connection options
 
 ```rust no_run
-use socketeer::{Socketeer, ConnectOptions};
+use socketeer::{ConnectOptions, JsonCodec, Socketeer};
 use std::time::Duration;
 
 # #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -59,7 +78,7 @@ let mut options = ConnectOptions::default();
 options.extra_headers.insert("Authorization", "Bearer my-token".parse().unwrap());
 options.keepalive_interval = Some(Duration::from_secs(10));
 
-let socketeer: Socketeer<Msg, Msg> =
+let socketeer: Socketeer<JsonCodec<Msg, Msg>> =
     Socketeer::connect_with("wss://api.example.com/ws", options)
         .await
         .unwrap();
@@ -69,12 +88,12 @@ let socketeer: Socketeer<Msg, Msg> =
 ### Connection lifecycle hooks
 
 ```rust no_run
-use socketeer::{Socketeer, ConnectOptions, ConnectionHandler, HandshakeContext, Error};
+use socketeer::{Codec, ConnectOptions, ConnectionHandler, Error, HandshakeContext, JsonCodec, Socketeer};
 
 struct MyAuthHandler { api_key: String }
 
-impl ConnectionHandler for MyAuthHandler {
-    async fn on_connected(&mut self, ctx: &mut HandshakeContext<'_>) -> Result<(), Error> {
+impl<C: Codec> ConnectionHandler<C> for MyAuthHandler {
+    async fn on_connected(&mut self, ctx: &mut HandshakeContext<'_, C>) -> Result<(), Error> {
         ctx.send_text(&format!(r#"{{"action":"auth","key":"{}"}}"#, self.api_key)).await?;
         let _response = ctx.recv_text().await?;
         Ok(())
@@ -86,10 +105,11 @@ impl ConnectionHandler for MyAuthHandler {
 # #[tokio::main]
 # async fn main() {
 let handler = MyAuthHandler { api_key: "secret".into() };
-let socketeer: Socketeer<Msg, Msg, MyAuthHandler> =
-    Socketeer::connect_with_handler(
+let socketeer: Socketeer<JsonCodec<Msg, Msg>, MyAuthHandler> =
+    Socketeer::connect_with_codec(
         "wss://stream.example.com",
         ConnectOptions::default(),
+        JsonCodec::new(),
         handler,
     )
     .await
