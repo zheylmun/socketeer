@@ -26,7 +26,7 @@ pub enum Error {
     UnexpectedMessageType(Box<Message>),
     /// Error thrown if a [`crate::Codec`] fails to encode or decode a message.
     #[error("Codec error: {0}")]
-    Codec(Box<dyn std::error::Error + Send + Sync>),
+    Codec(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// Error thrown if socketeer is dropped without closing the connection.
     /// This error will be removed once async destructors are stabilized.
     /// See [issue](https://github.com/rust-lang/rust/issues/126482)
