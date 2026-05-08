@@ -44,13 +44,17 @@ impl<'a, C: Codec> HandshakeContext<'a, C> {
 
     /// Receive and decode the next message using the connection's [`Codec`].
     ///
-    /// Skips ping/pong protocol frames. Returns an error on close or codec failure.
+    /// Skips ping/pong protocol frames. A peer-initiated close is surfaced as
+    /// [`Error::WebsocketClosed`] regardless of the negotiated codec — use
+    /// [`Self::recv_raw`] if you need to observe the close frame directly.
     /// # Errors
-    /// - If the WebSocket connection is closed
+    /// - If the WebSocket connection is closed (including a received close frame)
     /// - If the codec fails to decode the frame
     pub async fn recv(&mut self) -> Result<C::Rx, Error> {
-        let frame = self.recv_raw().await?;
-        self.codec.decode(&frame)
+        match self.recv_raw().await? {
+            Message::Close(_) => Err(Error::WebsocketClosed),
+            frame => self.codec.decode(&frame),
+        }
     }
 
     /// Send a raw text frame during the handshake.

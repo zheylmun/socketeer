@@ -777,6 +777,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handshake_recv_close_with_raw_codec() {
+        // Regression: with RawCodec, recv_raw returns Ok(Message::Close(_)) and
+        // RawCodec::decode is the identity, so a peer-initiated close used to
+        // surface as Ok(Close) instead of Err(WebsocketClosed). recv must
+        // intercept Close before delegating to the codec.
+        struct CloseExpecting;
+
+        impl ConnectionHandler<RawCodec> for CloseExpecting {
+            async fn on_connected(
+                &mut self,
+                ctx: &mut HandshakeContext<'_, RawCodec>,
+            ) -> Result<(), Error> {
+                // Ask the echo server to close (JSON unit-variant for EchoControlMessage::Close).
+                ctx.send(&Message::Text(r#""Close""#.into())).await?;
+                let err = ctx.recv().await.unwrap_err();
+                assert!(matches!(err, Error::WebsocketClosed));
+                Ok(())
+            }
+        }
+
+        let server_address = get_mock_address(echo_server).await;
+        let _socketeer: Socketeer<RawCodec, CloseExpecting> = Socketeer::connect_with_codec(
+            &format!("ws://{server_address}"),
+            ConnectOptions::default(),
+            RawCodec::new(),
+            CloseExpecting,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn test_extra_headers_used() {
         // Cover ConnectOptions::build_request's loop body that copies
         // `extra_headers` onto the upgrade request.
