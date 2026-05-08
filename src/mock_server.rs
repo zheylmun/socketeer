@@ -28,11 +28,19 @@ pub enum EchoControlMessage {
 
 /// Basic echo server that sends back messages it receives.
 /// It will also respond to pings and close the connection upon request.
+///
+/// This is a test harness exposed under the `mocking` feature flag and is **not**
+/// intended for production use. It deliberately panics on any unexpected
+/// condition (bad payloads, send/close failures on auxiliary frames) so that
+/// protocol violations surface loudly as test failures rather than being
+/// silently swallowed.
 /// # Errors
 /// - If the socket is closed unexpectedly
-/// - If the server cannot send a message
+/// - If echoing or sending a control frame to the client fails
 /// # Panics
-/// - If a received message fails to deserialize
+/// - If a received message fails to deserialize as an [`EchoControlMessage`]
+/// - If sending a Pong reply fails
+/// - If closing the sink in response to a peer-initiated close fails
 pub async fn echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::Error> {
     let (mut sink, mut stream) = ws.split();
     let mut shutting_down = false;
@@ -83,11 +91,19 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::E
 ///
 /// Decodes each incoming binary frame as an [`EchoControlMessage`] via msgpack
 /// and behaves like [`echo_server`] for the embedded control message.
+///
+/// This is a test harness exposed under the `mocking` feature flag and is **not**
+/// intended for production use. It deliberately panics on any unexpected
+/// condition (bad payloads, send/close failures on auxiliary frames) so that
+/// protocol violations surface loudly as test failures rather than being
+/// silently swallowed.
 /// # Errors
 /// - If the socket is closed unexpectedly
-/// - If the server cannot send a message
+/// - If echoing or sending a control frame to the client fails
 /// # Panics
-/// - If a received message fails to deserialize
+/// - If a received binary frame fails to deserialize as an [`EchoControlMessage`]
+/// - If sending a Pong reply fails
+/// - If closing the sink in response to a peer-initiated close fails
 #[cfg(feature = "msgpack")]
 pub async fn msgpack_echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::Error> {
     let (mut sink, mut stream) = ws.split();
@@ -134,11 +150,16 @@ pub async fn msgpack_echo_server(ws: WebSocketStreamType) -> Result<bool, tungst
 /// Expects the client to send `{"action":"auth","token":"test-token"}` as the first message.
 /// Responds with `{"status":"authenticated"}` on success or `{"status":"error"}` on failure.
 /// After auth, behaves like [`echo_server`].
+///
+/// This is a test harness exposed under the `mocking` feature flag and is **not**
+/// intended for production use. It inherits the panic-on-unexpected-condition
+/// behavior of [`echo_server`] once the handshake completes, so protocol
+/// violations surface loudly as test failures.
 /// # Errors
 /// - If the socket is closed unexpectedly
-/// - If the server cannot send a message
+/// - If sending the auth response or any echoed frame fails
 /// # Panics
-/// - If a received message fails to deserialize
+/// - Inherits all panics documented on [`echo_server`] after a successful handshake
 pub async fn auth_echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::Error> {
     let (mut sink, mut stream) = ws.split();
 
