@@ -9,6 +9,7 @@ use bytes::Bytes;
 use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::Message;
 
+use futures::StreamExt;
 use socketeer::{
     Codec, ConnectOptions, ConnectionHandler, EchoControlMessage, Error, HandshakeContext,
     JsonCodec, RawCodec, Socketeer, auth_echo_server, echo_server, get_mock_address,
@@ -567,6 +568,191 @@ async fn test_handshake_recv_text_rejects_binary() {
     .await
     .unwrap();
     socketeer.close_connection().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_split_round_trip() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    let message = EchoControlMessage::Message("split hello".into());
+    tx.send(message.clone()).await.unwrap();
+    assert_eq!(rx.next_message().await.unwrap(), message);
+    tx.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_split_concurrent_sends_from_clones() {
+    // Multiple cloned Tx handles send concurrently; all deliveries observed.
+    use std::collections::HashSet;
+
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    let tx1 = tx.clone();
+    let tx2 = tx.clone();
+
+    let payload1 = "concurrent-a".to_string();
+    let payload2 = "concurrent-b".to_string();
+
+    let msg1 = EchoControlMessage::Message(payload1.clone());
+    let msg2 = EchoControlMessage::Message(payload2.clone());
+
+    // Spawn two independent tasks, each owning a clone; SocketeerTx is Send + 'static.
+    let h1 = tokio::spawn(async move { tx1.send(msg1).await.unwrap() });
+    let h2 = tokio::spawn(async move { tx2.send(msg2).await.unwrap() });
+
+    h1.await.unwrap();
+    h2.await.unwrap();
+
+    // Drain exactly two echoed messages; order across senders is unspecified.
+    let r1 = rx.next_message().await.unwrap();
+    let r2 = rx.next_message().await.unwrap();
+
+    let received: HashSet<String> = [r1, r2]
+        .into_iter()
+        .map(|m| match m {
+            EchoControlMessage::Message(s) => s,
+            other => panic!("unexpected echo: {other:?}"),
+        })
+        .collect();
+    let expected: HashSet<String> = [payload1, payload2].into_iter().collect();
+    assert_eq!(received, expected);
+
+    tx.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_tx_close_ends_receive() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    tx.close().await.unwrap();
+    assert!(matches!(
+        rx.next_message().await.unwrap_err(),
+        Error::WebsocketClosed
+    ));
+}
+
+#[tokio::test]
+async fn test_send_unconfirmed_delivers() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    let message = EchoControlMessage::Message("unconfirmed".into());
+    // Fire-and-forget: returns once enqueued, no round-trip.
+    tx.send_unconfirmed(message.clone()).await.unwrap();
+    // The echo server still delivers it.
+    assert_eq!(rx.next_message().await.unwrap(), message);
+    // Liveness: a confirmed send still round-trips afterward.
+    let confirmed = EchoControlMessage::Message("after".into());
+    tx.send(confirmed.clone()).await.unwrap();
+    assert_eq!(rx.next_message().await.unwrap(), confirmed);
+    tx.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_rx_stream_round_trip() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    let message = EchoControlMessage::Message("stream hello".into());
+    tx.send(message.clone()).await.unwrap();
+    let item = rx.next().await.unwrap().unwrap();
+    assert_eq!(item, message);
+    tx.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_rx_stream_abrupt_close_yields_error_then_ends() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    tx.send(EchoControlMessage::Abort).await.unwrap();
+    let err = rx.next().await.unwrap().unwrap_err();
+    assert!(
+        matches!(err, Error::WebsocketError(_)),
+        "expected WebsocketError, got {err:?}"
+    );
+    assert!(rx.next().await.is_none(), "stream must end after the error");
+}
+
+#[tokio::test]
+async fn test_rx_stream_graceful_close_ends_cleanly() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    tx.close().await.unwrap();
+    // Graceful close records no cause, so the stream just ends.
+    assert!(rx.next().await.is_none());
+}
+
+#[tokio::test]
+async fn test_reunite_then_reconnect() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, rx) = socketeer.split();
+    let socketeer = rx.reunite(tx).expect("matching halves reunite");
+    // Full handle restored: reconnect works.
+    let mut socketeer = socketeer.reconnect().await.unwrap();
+    let message = EchoControlMessage::Message("after reunite".into());
+    socketeer.send(message.clone()).await.unwrap();
+    assert_eq!(socketeer.next_message().await.unwrap(), message);
+    socketeer.close_connection().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_reunite_mismatch_returns_halves() {
+    // Two separate servers: the mock server's accept loop is serial (it blocks
+    // in echo_server until the connection closes), so two concurrent
+    // connections must target two addresses or the second connect hangs.
+    let addr_a = get_mock_address(echo_server).await;
+    let addr_b = get_mock_address(echo_server).await;
+    let sock_a: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{addr_a}")).await.unwrap();
+    let sock_b: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{addr_b}")).await.unwrap();
+    let (tx_a, rx_a) = sock_a.split();
+    let (tx_b, rx_b) = sock_b.split();
+    // Mismatched halves: rx from A, tx from B.
+    let err = rx_a
+        .reunite(tx_b)
+        .expect_err("mismatched halves must not reunite");
+    // Exercise Display and Error trait impls before consuming err by value.
+    assert!(!err.to_string().is_empty());
+    let _: &dyn std::error::Error = &err;
+    let socketeer::ReuniteError { tx: tx_b, rx: rx_a } = err;
+    // Both halves survive and reunite with their correct partners.
+    let sock_a = rx_a.reunite(tx_a).expect("correct halves reunite");
+    let sock_b = rx_b.reunite(tx_b).expect("correct halves reunite");
+    sock_a.close_connection().await.unwrap();
+    sock_b.close_connection().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_socketeer_as_stream() {
+    let server_address = get_mock_address(echo_server).await;
+    let mut socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let message = EchoControlMessage::Message("direct stream".into());
+    socketeer.send(message.clone()).await.unwrap();
+    let item = socketeer.next().await.unwrap().unwrap();
+    assert_eq!(item, message);
 }
 
 #[tokio::test]

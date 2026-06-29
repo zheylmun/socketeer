@@ -7,6 +7,7 @@ mod handler;
 #[cfg(feature = "mocking")]
 mod mock_server;
 mod socket_loop;
+mod split;
 
 #[cfg(feature = "msgpack")]
 pub use codec::MsgPackCodec;
@@ -18,14 +19,17 @@ pub use handler::{ConnectionHandler, HandshakeContext, NoopHandler};
 pub use mock_server::msgpack_echo_server;
 #[cfg(feature = "mocking")]
 pub use mock_server::{EchoControlMessage, auth_echo_server, echo_server, get_mock_address};
+pub use split::{ReuniteError, SocketeerRx, SocketeerTx};
 
 pub(crate) use socket_loop::WebSocketStreamType;
-use socket_loop::{TerminalError, TxChannelPayload, send_close, socket_loop_split};
+use socket_loop::{TerminalError, TxChannelPayload, send_close, send_confirmed, socket_loop_split};
 
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
 
-use futures::StreamExt;
-use tokio::sync::{mpsc, oneshot};
+use futures::{Stream, StreamExt};
+use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[cfg(feature = "tracing")]
@@ -68,6 +72,26 @@ where
         f.debug_struct("Socketeer")
             .field("url", &self.url)
             .finish_non_exhaustive()
+    }
+}
+
+impl<C: Codec + Unpin, Handler, const CHANNEL_SIZE: usize> Stream
+    for Socketeer<C, Handler, CHANNEL_SIZE>
+where
+    Handler: ConnectionHandler<C> + Unpin,
+{
+    type Item = Result<C::Rx, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.receiver.poll_recv(cx) {
+            Poll::Ready(Some(message)) => Poll::Ready(Some(this.codec.decode(&message))),
+            Poll::Ready(None) => match socket_loop::take_terminal_error_opt(&this.terminal_error) {
+                Some(error) => Poll::Ready(Some(Err(error))),
+                None => Poll::Ready(None),
+            },
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -165,6 +189,31 @@ where
         })
     }
 
+    /// Reassemble a `Socketeer` from its parts. Used by
+    /// [`SocketeerRx::reunite`](crate::SocketeerRx::reunite).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        url: Url,
+        options: ConnectOptions,
+        codec: C,
+        handler: Handler,
+        receiver: mpsc::Receiver<Message>,
+        sender: mpsc::Sender<TxChannelPayload>,
+        socket_handle: tokio::task::JoinHandle<()>,
+        terminal_error: TerminalError,
+    ) -> Self {
+        Self {
+            url,
+            options,
+            codec,
+            handler,
+            receiver,
+            sender,
+            socket_handle,
+            terminal_error,
+        }
+    }
+
     /// Wait for the next message from the WebSocket connection, decoded by the
     /// connection's [`Codec`].
     ///
@@ -189,11 +238,7 @@ where
     /// The cause is surfaced once: the first caller to observe the closed
     /// connection consumes it, and subsequent observers see `WebsocketClosed`.
     fn take_terminal_error(&self) -> Error {
-        self.terminal_error
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .unwrap_or(Error::WebsocketClosed)
+        socket_loop::take_terminal_error(&self.terminal_error)
     }
 
     /// Encode and send a message via the connection's [`Codec`].
@@ -233,18 +278,7 @@ where
     ///
     /// - If the WebSocket connection is closed, or otherwise errored
     pub async fn send_raw(&self, message: Message) -> Result<(), Error> {
-        let (tx, rx) = oneshot::channel::<Result<(), Error>>();
-        self.sender
-            .send(TxChannelPayload {
-                message,
-                response_tx: tx,
-            })
-            .await
-            .map_err(|_| self.take_terminal_error())?;
-        match rx.await {
-            Ok(result) => result,
-            Err(_) => unreachable!("Socket loop always sends response before dropping one-shot"),
-        }
+        send_confirmed(&self.sender, &self.terminal_error, message).await
     }
 
     /// Consume self, closing down any remaining send/receive, and return a new Socketeer instance if successful.
@@ -304,5 +338,36 @@ where
             Some(error) => Err(error),
             None => close_sent,
         }
+    }
+}
+
+impl<C, Handler, const CHANNEL_SIZE: usize> Socketeer<C, Handler, CHANNEL_SIZE>
+where
+    C: Codec + Clone,
+    Handler: ConnectionHandler<C>,
+{
+    /// Split into an owned, cloneable send half and an owned receive half.
+    ///
+    /// A pure move — no new tasks are spawned and the existing channels are
+    /// reused. The codec is cloned into both halves (the send half encodes,
+    /// the receive half decodes). Recombine with
+    /// [`SocketeerRx::reunite`](crate::SocketeerRx::reunite).
+    #[must_use]
+    pub fn split(self) -> (SocketeerTx<C>, SocketeerRx<C, Handler, CHANNEL_SIZE>) {
+        let tx = SocketeerTx {
+            sender: self.sender,
+            codec: self.codec.clone(),
+            terminal_error: Arc::clone(&self.terminal_error),
+        };
+        let rx = SocketeerRx {
+            receiver: self.receiver,
+            codec: self.codec,
+            terminal_error: self.terminal_error,
+            socket_handle: self.socket_handle,
+            url: self.url,
+            options: self.options,
+            handler: self.handler,
+        };
+        (tx, rx)
     }
 }
