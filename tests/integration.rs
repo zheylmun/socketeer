@@ -712,6 +712,18 @@ async fn test_reunite_mismatch_returns_halves() {
 }
 
 #[tokio::test]
+async fn test_socketeer_as_stream() {
+    let server_address = get_mock_address(echo_server).await;
+    let mut socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let message = EchoControlMessage::Message("direct stream".into());
+    socketeer.send(message.clone()).await.unwrap();
+    let item = socketeer.next().await.unwrap().unwrap();
+    assert_eq!(item, message);
+}
+
+#[tokio::test]
 async fn test_binary_custom_keepalive() {
     // The widening of custom_keepalive_message from Option<String> to
     // Option<Message> is otherwise unexercised. echo_server silently

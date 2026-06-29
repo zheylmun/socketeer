@@ -24,9 +24,11 @@ pub use split::{ReuniteError, SocketeerRx, SocketeerTx};
 pub(crate) use socket_loop::WebSocketStreamType;
 use socket_loop::{TerminalError, TxChannelPayload, send_close, send_confirmed, socket_loop_split};
 
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
 
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -70,6 +72,26 @@ where
         f.debug_struct("Socketeer")
             .field("url", &self.url)
             .finish_non_exhaustive()
+    }
+}
+
+impl<C: Codec + Unpin, Handler, const CHANNEL_SIZE: usize> Stream
+    for Socketeer<C, Handler, CHANNEL_SIZE>
+where
+    Handler: ConnectionHandler<C> + Unpin,
+{
+    type Item = Result<C::Rx, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.receiver.poll_recv(cx) {
+            Poll::Ready(Some(message)) => Poll::Ready(Some(this.codec.decode(&message))),
+            Poll::Ready(None) => match socket_loop::take_terminal_error_opt(&this.terminal_error) {
+                Some(error) => Poll::Ready(Some(Err(error))),
+                None => Poll::Ready(None),
+            },
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
