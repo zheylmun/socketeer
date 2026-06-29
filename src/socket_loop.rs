@@ -10,6 +10,7 @@
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::{
     net::TcpStream,
@@ -45,6 +46,11 @@ enum LoopState {
     Closed,
 }
 
+/// Shared slot where the loop records the error that terminated it, so the
+/// handle can surface the real cause instead of a generic closure once the
+/// channels drop.
+pub(crate) type TerminalError = Arc<Mutex<Option<Error>>>;
+
 /// Send a close frame via the tx channel and wait for confirmation.
 pub(crate) async fn send_close(sender: &mpsc::Sender<TxChannelPayload>) -> Result<(), Error> {
     let (tx, rx) = oneshot::channel::<Result<(), Error>>();
@@ -66,7 +72,7 @@ pub(crate) async fn send_close(sender: &mpsc::Sender<TxChannelPayload>) -> Resul
 
 #[cfg_attr(
     feature = "tracing",
-    instrument(skip(keepalive_interval, keepalive_message))
+    instrument(skip(keepalive_interval, keepalive_message, terminal_error))
 )]
 pub(crate) async fn socket_loop_split(
     mut receiver: mpsc::Receiver<TxChannelPayload>,
@@ -75,7 +81,8 @@ pub(crate) async fn socket_loop_split(
     mut stream: SocketStream,
     keepalive_interval: Option<Duration>,
     keepalive_message: Option<Message>,
-) -> Result<(), Error> {
+    terminal_error: TerminalError,
+) {
     let mut state = LoopState::Running;
     while matches!(state, LoopState::Running) {
         state = if let Some(interval) = keepalive_interval {
@@ -91,9 +98,17 @@ pub(crate) async fn socket_loop_split(
             }
         };
     }
+    // Record the terminal cause before returning. The `receiver`/`sender`
+    // channels are owned here and only drop once this function returns, so the
+    // handle cannot observe the closed channel until after this write lands —
+    // no race between recording the error and a consumer reading it.
     match state {
-        LoopState::Error(e) => Err(e),
-        LoopState::Closed => Ok(()),
+        LoopState::Error(e) => {
+            *terminal_error
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(e);
+        }
+        LoopState::Closed => {}
         LoopState::Running => unreachable!("We only exit when closed or errored"),
     }
 }

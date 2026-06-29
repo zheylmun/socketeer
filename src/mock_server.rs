@@ -24,6 +24,11 @@ pub enum EchoControlMessage {
     SendPing,
     /// Request that the server close the connection
     Close,
+    /// Request that the server drop the connection abruptly, without a
+    /// WebSocket close handshake. The client observes this as a
+    /// `tungstenite` protocol error (reset without closing handshake) rather
+    /// than a graceful close.
+    Abort,
 }
 
 /// Basic echo server that sends back messages it receives.
@@ -62,6 +67,12 @@ pub async fn echo_server(ws: WebSocketStreamType) -> Result<bool, tungstenite::E
                         })))
                         .await?;
                         shutting_down = true;
+                    }
+                    EchoControlMessage::Abort => {
+                        // Drop the socket without a close handshake. sink/stream
+                        // fall out of scope here, closing the TCP connection so
+                        // the client sees a reset rather than a graceful close.
+                        return Ok(true);
                     }
                 }
             }
@@ -126,6 +137,10 @@ pub async fn msgpack_echo_server(ws: WebSocketStreamType) -> Result<bool, tungst
                         })))
                         .await?;
                         shutting_down = true;
+                    }
+                    EchoControlMessage::Abort => {
+                        // Drop the socket without a close handshake, as in echo_server.
+                        return Ok(true);
                     }
                 }
             }

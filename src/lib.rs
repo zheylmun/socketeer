@@ -20,7 +20,9 @@ pub use mock_server::msgpack_echo_server;
 pub use mock_server::{EchoControlMessage, auth_echo_server, echo_server, get_mock_address};
 
 pub(crate) use socket_loop::WebSocketStreamType;
-use socket_loop::{TxChannelPayload, send_close, socket_loop_split};
+use socket_loop::{TerminalError, TxChannelPayload, send_close, socket_loop_split};
+
+use std::sync::{Arc, Mutex, PoisonError};
 
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
@@ -53,7 +55,8 @@ where
     handler: Handler,
     receiver: mpsc::Receiver<Message>,
     sender: mpsc::Sender<TxChannelPayload>,
-    socket_handle: tokio::task::JoinHandle<Result<(), Error>>,
+    socket_handle: tokio::task::JoinHandle<()>,
+    terminal_error: TerminalError,
 }
 
 impl<C: Codec, Handler, const CHANNEL_SIZE: usize> std::fmt::Debug
@@ -136,6 +139,8 @@ where
         let (tx_tx, tx_rx) = mpsc::channel::<TxChannelPayload>(CHANNEL_SIZE);
         let (rx_tx, rx_rx) = mpsc::channel::<Message>(CHANNEL_SIZE);
 
+        let terminal_error: TerminalError = Arc::new(Mutex::new(None));
+        let loop_terminal_error = Arc::clone(&terminal_error);
         let socket_handle = tokio::spawn(async move {
             socket_loop_split(
                 tx_rx,
@@ -144,8 +149,9 @@ where
                 stream,
                 keepalive_interval,
                 keepalive_message,
+                loop_terminal_error,
             )
-            .await
+            .await;
         });
         Ok(Socketeer {
             url,
@@ -155,6 +161,7 @@ where
             receiver: rx_rx,
             sender: tx_tx,
             socket_handle,
+            terminal_error,
         })
     }
 
@@ -168,11 +175,25 @@ where
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn next_message(&mut self) -> Result<C::Rx, Error> {
         let Some(message) = self.receiver.recv().await else {
-            return Err(Error::WebsocketClosed);
+            return Err(self.take_terminal_error());
         };
         #[cfg(feature = "tracing")]
         trace!("Received message: {:?}", message);
         self.codec.decode(&message)
+    }
+
+    /// Report the error the socket loop recorded when it terminated, falling
+    /// back to the generic [`Error::WebsocketClosed`] for a graceful close (or
+    /// once the cause has already been taken).
+    ///
+    /// The cause is surfaced once: the first caller to observe the closed
+    /// connection consumes it, and subsequent observers see `WebsocketClosed`.
+    fn take_terminal_error(&self) -> Error {
+        self.terminal_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .unwrap_or(Error::WebsocketClosed)
     }
 
     /// Encode and send a message via the connection's [`Codec`].
@@ -198,7 +219,10 @@ where
     ///
     /// - If the WebSocket connection is closed or otherwise errored
     pub async fn next_raw_message(&mut self) -> Result<Message, Error> {
-        self.receiver.recv().await.ok_or(Error::WebsocketClosed)
+        match self.receiver.recv().await {
+            Some(message) => Ok(message),
+            None => Err(self.take_terminal_error()),
+        }
     }
 
     /// Send a raw [`Message`] to the WebSocket connection without running the codec.
@@ -216,7 +240,7 @@ where
                 response_tx: tx,
             })
             .await
-            .map_err(|_| Error::WebsocketClosed)?;
+            .map_err(|_| self.take_terminal_error())?;
         match rx.await {
             Ok(result) => result,
             Err(_) => unreachable!("Socket loop always sends response before dropping one-shot"),
@@ -262,10 +286,23 @@ where
     pub async fn close_connection(self) -> Result<(), Error> {
         #[cfg(feature = "tracing")]
         debug!("Closing Connection");
-        send_close(&self.sender).await?;
-        match self.socket_handle.await {
-            Ok(result) => result,
-            Err(_) => unreachable!("Socket loop does not panic, and is not cancelled"),
+        let close_sent = send_close(&self.sender).await;
+        // Wait for the loop to finish so any terminal error has been recorded.
+        if self.socket_handle.await.is_err() {
+            unreachable!("Socket loop does not panic, and is not cancelled");
+        }
+        // Prefer the loop's recorded cause (it errored during or before the
+        // close); otherwise propagate whether the close frame was sent.
+        // Access the field directly: `self` is partially moved by the await
+        // above, so a `&self` helper can't be called here.
+        let terminal = self
+            .terminal_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        match terminal {
+            Some(error) => Err(error),
+            None => close_sent,
         }
     }
 }
