@@ -5,8 +5,11 @@
 //! half that can move into separate tasks. [`SocketeerRx::reunite`] recombines
 //! them to regain the full [`Socketeer`](crate::Socketeer) handle.
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
+use futures::Stream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
@@ -14,7 +17,7 @@ use url::Url;
 
 use crate::socket_loop::{
     TerminalError, TxChannelPayload, send_close, send_confirmed, send_unconfirmed,
-    take_terminal_error,
+    take_terminal_error, take_terminal_error_opt,
 };
 use crate::{Codec, ConnectOptions, ConnectionHandler, Error, NoopHandler};
 
@@ -141,6 +144,29 @@ where
         match self.receiver.recv().await {
             Some(message) => Ok(message),
             None => Err(take_terminal_error(&self.terminal_error)),
+        }
+    }
+}
+
+impl<C: Codec + Unpin, Handler, const CHANNEL_SIZE: usize> Stream
+    for SocketeerRx<C, Handler, CHANNEL_SIZE>
+where
+    Handler: ConnectionHandler<C> + Unpin,
+{
+    type Item = Result<C::Rx, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.receiver.poll_recv(cx) {
+            Poll::Ready(Some(message)) => Poll::Ready(Some(this.codec.decode(&message))),
+            Poll::Ready(None) => {
+                // Channel closed: surface the recorded cause once, then end.
+                match take_terminal_error_opt(&this.terminal_error) {
+                    Some(error) => Poll::Ready(Some(Err(error))),
+                    None => Poll::Ready(None),
+                }
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }

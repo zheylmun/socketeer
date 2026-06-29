@@ -9,6 +9,7 @@ use bytes::Bytes;
 use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::Message;
 
+use futures::StreamExt;
 use socketeer::{
     Codec, ConnectOptions, ConnectionHandler, EchoControlMessage, Error, HandshakeContext,
     JsonCodec, RawCodec, Socketeer, auth_echo_server, echo_server, get_mock_address,
@@ -627,6 +628,48 @@ async fn test_send_unconfirmed_delivers() {
     tx.send(confirmed.clone()).await.unwrap();
     assert_eq!(rx.next_message().await.unwrap(), confirmed);
     tx.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_rx_stream_round_trip() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    let message = EchoControlMessage::Message("stream hello".into());
+    tx.send(message.clone()).await.unwrap();
+    let item = rx.next().await.unwrap().unwrap();
+    assert_eq!(item, message);
+    tx.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_rx_stream_abrupt_close_yields_error_then_ends() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    tx.send(EchoControlMessage::Abort).await.unwrap();
+    let err = rx.next().await.unwrap().unwrap_err();
+    assert!(
+        matches!(err, Error::WebsocketError(_)),
+        "expected WebsocketError, got {err:?}"
+    );
+    assert!(rx.next().await.is_none(), "stream must end after the error");
+}
+
+#[tokio::test]
+async fn test_rx_stream_graceful_close_ends_cleanly() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    tx.close().await.unwrap();
+    // Graceful close records no cause, so the stream just ends.
+    assert!(rx.next().await.is_none());
 }
 
 #[tokio::test]
