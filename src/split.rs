@@ -19,7 +19,7 @@ use crate::socket_loop::{
     TerminalError, TxChannelPayload, send_close, send_confirmed, send_unconfirmed,
     take_terminal_error, take_terminal_error_opt,
 };
-use crate::{Codec, ConnectOptions, ConnectionHandler, Error, NoopHandler};
+use crate::{Codec, ConnectOptions, ConnectionHandler, Error, NoopHandler, Socketeer};
 
 /// The cloneable send half of a [`Socketeer`](crate::Socketeer), produced by
 /// [`Socketeer::split`](crate::Socketeer::split). Clone it to send from
@@ -146,6 +146,76 @@ where
             None => Err(take_terminal_error(&self.terminal_error)),
         }
     }
+
+    /// Recombine with a [`SocketeerTx`] to restore the full
+    /// [`Socketeer`](crate::Socketeer) handle (and thus `close_connection` /
+    /// `reconnect`).
+    ///
+    /// # Errors
+    /// Returns [`ReuniteError`] (carrying both halves back) if `tx` did not come
+    /// from the same [`split`](crate::Socketeer::split) as `self`.
+    // ReuniteError intentionally carries both halves back to the caller; boxing
+    // it would change the public API and force callers to dereference to destructure.
+    #[allow(clippy::result_large_err)]
+    pub fn reunite(
+        self,
+        tx: SocketeerTx<C>,
+    ) -> Result<Socketeer<C, Handler, CHANNEL_SIZE>, ReuniteError<C, Handler, CHANNEL_SIZE>> {
+        if Arc::ptr_eq(&self.terminal_error, &tx.terminal_error) {
+            Ok(Socketeer::from_parts(
+                self.url,
+                self.options,
+                self.codec,
+                self.handler,
+                self.receiver,
+                tx.sender,
+                self.socket_handle,
+                self.terminal_error,
+            ))
+        } else {
+            Err(ReuniteError { tx, rx: self })
+        }
+    }
+}
+
+/// Error returned by [`SocketeerRx::reunite`] when the two halves did not come
+/// from the same [`Socketeer::split`](crate::Socketeer::split). Carries both
+/// halves back so the caller can recover them.
+pub struct ReuniteError<C: Codec, Handler = NoopHandler, const CHANNEL_SIZE: usize = 4>
+where
+    Handler: ConnectionHandler<C>,
+{
+    /// The send half passed to `reunite`.
+    pub tx: SocketeerTx<C>,
+    /// The receive half `reunite` was called on.
+    pub rx: SocketeerRx<C, Handler, CHANNEL_SIZE>,
+}
+
+impl<C: Codec, Handler, const CHANNEL_SIZE: usize> std::fmt::Debug
+    for ReuniteError<C, Handler, CHANNEL_SIZE>
+where
+    Handler: ConnectionHandler<C>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReuniteError").finish_non_exhaustive()
+    }
+}
+
+impl<C: Codec, Handler, const CHANNEL_SIZE: usize> std::fmt::Display
+    for ReuniteError<C, Handler, CHANNEL_SIZE>
+where
+    Handler: ConnectionHandler<C>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("tried to reunite a SocketeerTx and SocketeerRx from different connections")
+    }
+}
+
+impl<C: Codec, Handler, const CHANNEL_SIZE: usize> std::error::Error
+    for ReuniteError<C, Handler, CHANNEL_SIZE>
+where
+    Handler: ConnectionHandler<C>,
+{
 }
 
 impl<C: Codec + Unpin, Handler, const CHANNEL_SIZE: usize> Stream

@@ -673,6 +673,45 @@ async fn test_rx_stream_graceful_close_ends_cleanly() {
 }
 
 #[tokio::test]
+async fn test_reunite_then_reconnect() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, rx) = socketeer.split();
+    let socketeer = rx.reunite(tx).expect("matching halves reunite");
+    // Full handle restored: reconnect works.
+    let mut socketeer = socketeer.reconnect().await.unwrap();
+    let message = EchoControlMessage::Message("after reunite".into());
+    socketeer.send(message.clone()).await.unwrap();
+    assert_eq!(socketeer.next_message().await.unwrap(), message);
+    socketeer.close_connection().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_reunite_mismatch_returns_halves() {
+    // Two separate servers: the mock server's accept loop is serial (it blocks
+    // in echo_server until the connection closes), so two concurrent
+    // connections must target two addresses or the second connect hangs.
+    let addr_a = get_mock_address(echo_server).await;
+    let addr_b = get_mock_address(echo_server).await;
+    let sock_a: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{addr_a}")).await.unwrap();
+    let sock_b: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{addr_b}")).await.unwrap();
+    let (tx_a, rx_a) = sock_a.split();
+    let (tx_b, rx_b) = sock_b.split();
+    // Mismatched halves: rx from A, tx from B.
+    let err = rx_a
+        .reunite(tx_b)
+        .expect_err("mismatched halves must not reunite");
+    let socketeer::ReuniteError { tx: tx_b, rx: rx_a } = err;
+    // Both halves survive and reunite with their correct partners.
+    let sock_a = rx_a.reunite(tx_a).expect("correct halves reunite");
+    let sock_b = rx_b.reunite(tx_b).expect("correct halves reunite");
+    sock_a.close_connection().await.unwrap();
+    sock_b.close_connection().await.unwrap();
+}
+
+#[tokio::test]
 async fn test_binary_custom_keepalive() {
     // The widening of custom_keepalive_message from Option<String> to
     // Option<Message> is otherwise unexercised. echo_server silently

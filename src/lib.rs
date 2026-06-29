@@ -19,7 +19,7 @@ pub use handler::{ConnectionHandler, HandshakeContext, NoopHandler};
 pub use mock_server::msgpack_echo_server;
 #[cfg(feature = "mocking")]
 pub use mock_server::{EchoControlMessage, auth_echo_server, echo_server, get_mock_address};
-pub use split::{SocketeerRx, SocketeerTx};
+pub use split::{ReuniteError, SocketeerRx, SocketeerTx};
 
 pub(crate) use socket_loop::WebSocketStreamType;
 use socket_loop::{TerminalError, TxChannelPayload, send_close, send_confirmed, socket_loop_split};
