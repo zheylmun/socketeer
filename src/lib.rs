@@ -49,9 +49,12 @@ use url::Url;
 ///   [`RawCodec`] for direct [`Message`] access.
 /// - `Handler`: A [`ConnectionHandler`] for lifecycle hooks (auth, subscriptions).
 ///   Defaults to [`NoopHandler`] for the simple case.
-/// - `CHANNEL_SIZE`: The size of the internal channels used to communicate between
-///   the task managing the WebSocket connection and the client.
-pub struct Socketeer<C: Codec, Handler = NoopHandler, const CHANNEL_SIZE: usize = 4>
+/// - `CHANNEL_SIZE`: Capacity of the internal mpsc channels between the
+///   connection task and the handle. Defaults to 256. A larger buffer absorbs
+///   transient consumer slowdowns so backpressure (which holds one frame and
+///   relies on keepalives to stay alive) engages only under sustained overload;
+///   tune it for your feed's burstiness.
+pub struct Socketeer<C: Codec, Handler = NoopHandler, const CHANNEL_SIZE: usize = 256>
 where
     Handler: ConnectionHandler<C>,
 {

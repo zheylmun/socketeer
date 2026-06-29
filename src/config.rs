@@ -14,6 +14,10 @@ pub struct ConnectOptions {
     pub extra_headers: http::HeaderMap,
     /// Idle timeout before sending a keepalive. `None` disables keepalives entirely.
     /// Defaults to 2 seconds.
+    ///
+    /// Keepalives also keep the connection alive while the receive buffer is
+    /// full and the reader is applying backpressure; with keepalives disabled, a
+    /// persistently slow consumer may eventually be disconnected by the server.
     pub keepalive_interval: Option<Duration>,
     /// If set, send this message as the keepalive instead of a WebSocket Ping frame.
     /// Useful for APIs that expect a custom keepalive payload — e.g. Interactive
