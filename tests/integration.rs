@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 
 use futures::StreamExt;
@@ -812,5 +812,49 @@ async fn test_binary_custom_keepalive() {
     let message = EchoControlMessage::Message("post-keepalive".into());
     socketeer.send(message.clone()).await.unwrap();
     assert_eq!(socketeer.next_message().await.unwrap(), message);
+    socketeer.close_connection().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_backpressure_keeps_protocol_alive() {
+    // Small buffer (2) < burst (5) forces backpressure. The client pauses past
+    // the keepalive interval before draining; the "alive" marker proves the
+    // loop kept firing keepalives WHILE backpressured (the server withholds it
+    // if no ping arrives within 500ms). On the pre-backpressure loop the loop
+    // is blocked on a full-channel send and sends no ping until the drain at
+    // 800ms — past the server's window — so the marker never comes.
+    let server_address = get_mock_address(backpressure_probe_server).await;
+    let options = ConnectOptions {
+        keepalive_interval: Some(Duration::from_millis(100)),
+        ..ConnectOptions::default()
+    };
+    let mut socketeer: Socketeer<EchoJson, NoopHandler, 2> =
+        Socketeer::connect_with(&format!("ws://{server_address}"), options)
+            .await
+            .unwrap();
+
+    // Stay paused well past the server's 500ms ping window.
+    sleep(Duration::from_millis(800)).await;
+
+    // All five burst frames must arrive, in order — zero loss.
+    let mut received = Vec::new();
+    for _ in 0..5 {
+        match socketeer.next_message().await.unwrap() {
+            EchoControlMessage::Message(s) => received.push(s),
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+    assert_eq!(
+        received,
+        vec!["burst-0", "burst-1", "burst-2", "burst-3", "burst-4"]
+    );
+
+    // Marker present => the client kept the protocol alive while backpressured.
+    let marker = timeout(Duration::from_secs(2), socketeer.next_message())
+        .await
+        .expect("alive marker should arrive, not hang")
+        .unwrap();
+    assert_eq!(marker, EchoControlMessage::Message("alive".to_string()));
+
     socketeer.close_connection().await.unwrap();
 }
