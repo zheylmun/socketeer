@@ -12,7 +12,8 @@ use tokio_tungstenite::tungstenite::Message;
 use futures::StreamExt;
 use socketeer::{
     Codec, ConnectOptions, ConnectionHandler, EchoControlMessage, Error, HandshakeContext,
-    JsonCodec, RawCodec, Socketeer, auth_echo_server, echo_server, get_mock_address,
+    JsonCodec, NoopHandler, RawCodec, Socketeer, auth_echo_server, backpressure_probe_server,
+    echo_server, get_mock_address,
 };
 
 #[cfg(feature = "msgpack")]
@@ -753,6 +754,39 @@ async fn test_socketeer_as_stream() {
     socketeer.send(message.clone()).await.unwrap();
     let item = socketeer.next().await.unwrap().unwrap();
     assert_eq!(item, message);
+}
+
+#[tokio::test]
+async fn test_backpressure_probe_server_delivers_burst_and_marker() {
+    // Large buffer (16) > burst (5): no backpressure. Validates the probe
+    // server — the client buffers the burst, goes idle, and its keepalive ping
+    // prompts the "alive" marker. Passes on the unmodified loop.
+    let server_address = get_mock_address(backpressure_probe_server).await;
+    let options = ConnectOptions {
+        keepalive_interval: Some(Duration::from_millis(100)),
+        ..ConnectOptions::default()
+    };
+    let mut socketeer: Socketeer<EchoJson, NoopHandler, 16> =
+        Socketeer::connect_with(&format!("ws://{server_address}"), options)
+            .await
+            .unwrap();
+
+    let mut received = Vec::new();
+    for _ in 0..5 {
+        match socketeer.next_message().await.unwrap() {
+            EchoControlMessage::Message(s) => received.push(s),
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+    assert_eq!(
+        received,
+        vec!["burst-0", "burst-1", "burst-2", "burst-3", "burst-4"]
+    );
+
+    let marker = socketeer.next_message().await.unwrap();
+    assert_eq!(marker, EchoControlMessage::Message("alive".to_string()));
+
+    socketeer.close_connection().await.unwrap();
 }
 
 #[tokio::test]
