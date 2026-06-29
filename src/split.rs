@@ -13,7 +13,8 @@ use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
 use crate::socket_loop::{
-    TerminalError, TxChannelPayload, send_close, send_confirmed, take_terminal_error,
+    TerminalError, TxChannelPayload, send_close, send_confirmed, send_unconfirmed,
+    take_terminal_error,
 };
 use crate::{Codec, ConnectOptions, ConnectionHandler, Error, NoopHandler};
 
@@ -58,6 +59,25 @@ impl<C: Codec> SocketeerTx<C> {
     /// - If the connection is closed or errored
     pub async fn send_raw(&self, message: Message) -> Result<(), Error> {
         send_confirmed(&self.sender, &self.terminal_error, message).await
+    }
+
+    /// Encode and send a message fire-and-forget: applies backpressure but does
+    /// not await the loop's per-send result, skipping the round-trip. Returns
+    /// `Ok(())` once enqueued; a later socket-send failure surfaces via the
+    /// receive stream / terminal error.
+    /// # Errors
+    /// - If the codec fails to encode the value
+    /// - If the connection is already closed
+    pub async fn send_unconfirmed(&self, message: C::Tx) -> Result<(), Error> {
+        let encoded = self.codec.encode(&message)?;
+        self.send_raw_unconfirmed(encoded).await
+    }
+
+    /// Send a raw [`Message`] fire-and-forget. See [`Self::send_unconfirmed`].
+    /// # Errors
+    /// - If the connection is already closed
+    pub async fn send_raw_unconfirmed(&self, message: Message) -> Result<(), Error> {
+        send_unconfirmed(&self.sender, &self.terminal_error, message).await
     }
 
     /// Send a graceful close frame. The receive half observes its stream

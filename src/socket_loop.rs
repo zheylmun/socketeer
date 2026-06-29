@@ -84,6 +84,23 @@ pub(crate) async fn send_confirmed(
     }
 }
 
+/// Enqueue a frame without awaiting the loop's per-send result. Applies
+/// backpressure (awaits channel capacity) but returns `Ok` as soon as the
+/// frame is queued; a socket-send failure surfaces via the terminal error.
+pub(crate) async fn send_unconfirmed(
+    sender: &mpsc::Sender<TxChannelPayload>,
+    terminal_error: &TerminalError,
+    message: Message,
+) -> Result<(), Error> {
+    sender
+        .send(TxChannelPayload {
+            message,
+            response_tx: None,
+        })
+        .await
+        .map_err(|_| take_terminal_error(terminal_error))
+}
+
 /// Send a close frame via the tx channel and wait for confirmation.
 pub(crate) async fn send_close(sender: &mpsc::Sender<TxChannelPayload>) -> Result<(), Error> {
     let (tx, rx) = oneshot::channel::<Result<(), Error>>();

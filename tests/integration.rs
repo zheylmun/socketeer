@@ -611,6 +611,25 @@ async fn test_tx_close_ends_receive() {
 }
 
 #[tokio::test]
+async fn test_send_unconfirmed_delivers() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    let message = EchoControlMessage::Message("unconfirmed".into());
+    // Fire-and-forget: returns once enqueued, no round-trip.
+    tx.send_unconfirmed(message.clone()).await.unwrap();
+    // The echo server still delivers it.
+    assert_eq!(rx.next_message().await.unwrap(), message);
+    // Liveness: a confirmed send still round-trips afterward.
+    let confirmed = EchoControlMessage::Message("after".into());
+    tx.send(confirmed.clone()).await.unwrap();
+    assert_eq!(rx.next_message().await.unwrap(), confirmed);
+    tx.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn test_binary_custom_keepalive() {
     // The widening of custom_keepalive_message from Option<String> to
     // Option<Message> is otherwise unexercised. echo_server silently
