@@ -105,6 +105,24 @@ async fn test_closed_socket() {
 }
 
 #[tokio::test]
+async fn test_abrupt_close_surfaces_websocket_error() {
+    // When the peer drops the connection without a close handshake, the socket
+    // loop terminates with a WebsocketError. That real cause must reach the
+    // consumer via next_message, rather than being flattened to the generic
+    // WebsocketClosed that a graceful close produces.
+    let server_address = get_mock_address(echo_server).await;
+    let mut socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    socketeer.send(EchoControlMessage::Abort).await.unwrap();
+    let err = socketeer.next_message().await.unwrap_err();
+    assert!(
+        matches!(err, Error::WebsocketError(_)),
+        "expected the underlying WebsocketError, got {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_close_request() {
     let server_address = get_mock_address(echo_server).await;
     let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
