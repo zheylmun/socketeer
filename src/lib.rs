@@ -189,11 +189,7 @@ where
     /// The cause is surfaced once: the first caller to observe the closed
     /// connection consumes it, and subsequent observers see `WebsocketClosed`.
     fn take_terminal_error(&self) -> Error {
-        self.terminal_error
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .unwrap_or(Error::WebsocketClosed)
+        socket_loop::take_terminal_error(&self.terminal_error)
     }
 
     /// Encode and send a message via the connection's [`Codec`].
@@ -237,7 +233,7 @@ where
         self.sender
             .send(TxChannelPayload {
                 message,
-                response_tx: tx,
+                response_tx: Some(tx),
             })
             .await
             .map_err(|_| self.take_terminal_error())?;

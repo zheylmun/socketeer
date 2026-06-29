@@ -29,11 +29,11 @@ use tracing::{error, info, instrument, trace};
 use crate::Error;
 
 /// A frame to send, paired with a one-shot the loop uses to report the result
-/// of the underlying `sink.send`.
+/// of the underlying `sink.send`. `None` for fire-and-forget sends.
 #[derive(Debug)]
 pub(crate) struct TxChannelPayload {
     pub(crate) message: Message,
-    pub(crate) response_tx: oneshot::Sender<Result<(), Error>>,
+    pub(crate) response_tx: Option<oneshot::Sender<Result<(), Error>>>,
 }
 
 pub(crate) type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -51,6 +51,19 @@ enum LoopState {
 /// channels drop.
 pub(crate) type TerminalError = Arc<Mutex<Option<Error>>>;
 
+/// Take the recorded terminal error, if any. The cause is surfaced once: the
+/// first caller consumes it, later callers see `None`. A graceful close records
+/// nothing, so this returns `None`.
+pub(crate) fn take_terminal_error_opt(slot: &TerminalError) -> Option<Error> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// Like [`take_terminal_error_opt`] but falls back to [`Error::WebsocketClosed`]
+/// when no specific cause was recorded.
+pub(crate) fn take_terminal_error(slot: &TerminalError) -> Error {
+    take_terminal_error_opt(slot).unwrap_or(Error::WebsocketClosed)
+}
+
 /// Send a close frame via the tx channel and wait for confirmation.
 pub(crate) async fn send_close(sender: &mpsc::Sender<TxChannelPayload>) -> Result<(), Error> {
     let (tx, rx) = oneshot::channel::<Result<(), Error>>();
@@ -60,7 +73,7 @@ pub(crate) async fn send_close(sender: &mpsc::Sender<TxChannelPayload>) -> Resul
                 code: tungstenite::protocol::frame::coding::CloseCode::Normal,
                 reason: Utf8Bytes::from_static("Closing Connection"),
             })),
-            response_tx: tx,
+            response_tx: Some(tx),
         })
         .await
         .map_err(|_| Error::WebsocketClosed)?;
@@ -123,15 +136,15 @@ async fn send_socket_message(
         trace!("Sending message: {:?}", message);
         let send_result = sink.send(message.message).await.map_err(Error::from);
         let socket_error = send_result.is_err();
-        match message.response_tx.send(send_result) {
-            Ok(()) => {
-                if socket_error {
-                    LoopState::Error(Error::WebsocketClosed)
-                } else {
-                    LoopState::Running
-                }
+        if let Some(response_tx) = message.response_tx {
+            if response_tx.send(send_result).is_err() {
+                return LoopState::Error(Error::SocketeerDroppedWithoutClosing);
             }
-            Err(_) => LoopState::Error(Error::SocketeerDroppedWithoutClosing),
+        }
+        if socket_error {
+            LoopState::Error(Error::WebsocketClosed)
+        } else {
+            LoopState::Running
         }
     } else {
         #[cfg(feature = "tracing")]
