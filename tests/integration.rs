@@ -584,16 +584,45 @@ async fn test_split_round_trip() {
 }
 
 #[tokio::test]
-async fn test_split_cloned_sender_concurrent() {
+async fn test_split_concurrent_sends_from_clones() {
+    // Multiple cloned Tx handles send concurrently; all deliveries observed.
+    use std::collections::HashSet;
+
     let server_address = get_mock_address(echo_server).await;
     let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
         .await
         .unwrap();
     let (tx, mut rx) = socketeer.split();
+    let tx1 = tx.clone();
     let tx2 = tx.clone();
-    let message = EchoControlMessage::Message("from clone".into());
-    tx2.send(message.clone()).await.unwrap();
-    assert_eq!(rx.next_message().await.unwrap(), message);
+
+    let payload1 = "concurrent-a".to_string();
+    let payload2 = "concurrent-b".to_string();
+
+    let msg1 = EchoControlMessage::Message(payload1.clone());
+    let msg2 = EchoControlMessage::Message(payload2.clone());
+
+    // Spawn two independent tasks, each owning a clone; SocketeerTx is Send + 'static.
+    let h1 = tokio::spawn(async move { tx1.send(msg1).await.unwrap() });
+    let h2 = tokio::spawn(async move { tx2.send(msg2).await.unwrap() });
+
+    h1.await.unwrap();
+    h2.await.unwrap();
+
+    // Drain exactly two echoed messages; order across senders is unspecified.
+    let r1 = rx.next_message().await.unwrap();
+    let r2 = rx.next_message().await.unwrap();
+
+    let received: HashSet<String> = [r1, r2]
+        .into_iter()
+        .map(|m| match m {
+            EchoControlMessage::Message(s) => s,
+            other => panic!("unexpected echo: {other:?}"),
+        })
+        .collect();
+    let expected: HashSet<String> = [payload1, payload2].into_iter().collect();
+    assert_eq!(received, expected);
+
     tx.close().await.unwrap();
 }
 
@@ -703,6 +732,9 @@ async fn test_reunite_mismatch_returns_halves() {
     let err = rx_a
         .reunite(tx_b)
         .expect_err("mismatched halves must not reunite");
+    // Exercise Display and Error trait impls before consuming err by value.
+    assert!(!err.to_string().is_empty());
+    let _: &dyn std::error::Error = &err;
     let socketeer::ReuniteError { tx: tx_b, rx: rx_a } = err;
     // Both halves survive and reunite with their correct partners.
     let sock_a = rx_a.reunite(tx_a).expect("correct halves reunite");
