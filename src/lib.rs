@@ -259,7 +259,7 @@ where
             #[allow(unused_variables)]
             Err(e) => {
                 #[cfg(feature = "tracing")]
-                error!("Socket Loop already stopped: {}", e);
+                debug!("Socket loop already stopped during reconnect: {}", e);
             }
         }
         Self::connect_with_codec(&url, options, codec, handler).await
@@ -352,7 +352,7 @@ async fn send_socket_message(
 ) -> LoopState {
     if let Some(message) = message {
         #[cfg(feature = "tracing")]
-        debug!("Sending message: {:?}", message);
+        trace!("Sending message: {:?}", message);
         let send_result = sink.send(message.message).await.map_err(Error::from);
         let socket_error = send_result.is_err();
         match message.response_tx.send(send_result) {
@@ -429,11 +429,11 @@ async fn socket_message_received(
 async fn send_keepalive(sink: &mut SocketSink, custom_message: Option<&Message>) -> LoopState {
     let message = if let Some(custom) = custom_message {
         #[cfg(feature = "tracing")]
-        info!("Timeout waiting for message, sending custom keepalive");
+        trace!("Timeout waiting for message, sending custom keepalive");
         custom.clone()
     } else {
         #[cfg(feature = "tracing")]
-        info!("Timeout waiting for message, sending Ping");
+        trace!("Timeout waiting for message, sending Ping");
         Message::Ping(Bytes::new())
     };
     let result = sink.send(message).await.map_err(Error::from);
