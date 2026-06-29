@@ -96,7 +96,7 @@ impl<C: Codec> SocketeerTx<C> {
 /// [`Socketeer::split`](crate::Socketeer::split). Implements
 /// [`Stream`](futures::Stream) and can be recombined with a [`SocketeerTx`] via
 /// [`reunite`](Self::reunite).
-pub struct SocketeerRx<C: Codec, Handler = NoopHandler, const CHANNEL_SIZE: usize = 4>
+pub struct SocketeerRx<C: Codec, Handler = NoopHandler, const CHANNEL_SIZE: usize = 256>
 where
     Handler: ConnectionHandler<C>,
 {
@@ -181,7 +181,7 @@ where
 /// Error returned by [`SocketeerRx::reunite`] when the two halves did not come
 /// from the same [`Socketeer::split`](crate::Socketeer::split). Carries both
 /// halves back so the caller can recover them.
-pub struct ReuniteError<C: Codec, Handler = NoopHandler, const CHANNEL_SIZE: usize = 4>
+pub struct ReuniteError<C: Codec, Handler = NoopHandler, const CHANNEL_SIZE: usize = 256>
 where
     Handler: ConnectionHandler<C>,
 {

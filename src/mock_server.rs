@@ -215,10 +215,10 @@ pub async fn auth_echo_server(ws: WebSocketStreamType) -> Result<bool, tungsteni
 ///
 /// This is a test harness exposed under the `mocking` feature flag and is **not**
 /// intended for production use.
-/// # Panics
-/// - If serializing an [`EchoControlMessage`] to JSON fails (infallible in practice)
 /// # Errors
 /// - If sending a burst frame, the marker, or a pong fails
+/// # Panics
+/// - If serializing an [`EchoControlMessage`] to JSON fails (infallible in practice)
 pub async fn backpressure_probe_server(
     ws: WebSocketStreamType,
 ) -> Result<bool, tungstenite::Error> {
