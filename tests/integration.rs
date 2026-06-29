@@ -570,6 +570,47 @@ async fn test_handshake_recv_text_rejects_binary() {
 }
 
 #[tokio::test]
+async fn test_split_round_trip() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    let message = EchoControlMessage::Message("split hello".into());
+    tx.send(message.clone()).await.unwrap();
+    assert_eq!(rx.next_message().await.unwrap(), message);
+    tx.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_split_cloned_sender_concurrent() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    let tx2 = tx.clone();
+    let message = EchoControlMessage::Message("from clone".into());
+    tx2.send(message.clone()).await.unwrap();
+    assert_eq!(rx.next_message().await.unwrap(), message);
+    tx.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_tx_close_ends_receive() {
+    let server_address = get_mock_address(echo_server).await;
+    let socketeer: Socketeer<EchoJson> = Socketeer::connect(&format!("ws://{server_address}"))
+        .await
+        .unwrap();
+    let (tx, mut rx) = socketeer.split();
+    tx.close().await.unwrap();
+    assert!(matches!(
+        rx.next_message().await.unwrap_err(),
+        Error::WebsocketClosed
+    ));
+}
+
+#[tokio::test]
 async fn test_binary_custom_keepalive() {
     // The widening of custom_keepalive_message from Option<String> to
     // Option<Message> is otherwise unexercised. echo_server silently

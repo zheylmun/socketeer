@@ -64,6 +64,26 @@ pub(crate) fn take_terminal_error(slot: &TerminalError) -> Error {
     take_terminal_error_opt(slot).unwrap_or(Error::WebsocketClosed)
 }
 
+/// Enqueue a frame and await the loop's result for this specific send.
+pub(crate) async fn send_confirmed(
+    sender: &mpsc::Sender<TxChannelPayload>,
+    terminal_error: &TerminalError,
+    message: Message,
+) -> Result<(), Error> {
+    let (tx, rx) = oneshot::channel::<Result<(), Error>>();
+    sender
+        .send(TxChannelPayload {
+            message,
+            response_tx: Some(tx),
+        })
+        .await
+        .map_err(|_| take_terminal_error(terminal_error))?;
+    match rx.await {
+        Ok(result) => result,
+        Err(_) => unreachable!("Socket loop always sends response before dropping one-shot"),
+    }
+}
+
 /// Send a close frame via the tx channel and wait for confirmation.
 pub(crate) async fn send_close(sender: &mpsc::Sender<TxChannelPayload>) -> Result<(), Error> {
     let (tx, rx) = oneshot::channel::<Result<(), Error>>();
