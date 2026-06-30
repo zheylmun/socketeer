@@ -13,7 +13,7 @@ pub use bytes::Bytes;
 #[cfg(feature = "msgpack")]
 pub use codec::MsgPackCodec;
 pub use codec::{Codec, JsonCodec, RawCodec};
-pub use config::ConnectOptions;
+pub use config::{ConnectOptions, ConnectOptionsBuilder};
 pub use error::Error;
 pub use handler::{ConnectionHandler, HandshakeContext, NoopHandler};
 #[cfg(all(feature = "mocking", feature = "msgpack"))]
@@ -25,7 +25,8 @@ pub use tokio_tungstenite::tungstenite::{self, Message, http};
 
 /// The concrete `WebSocketStream` type the mock-server handlers operate on.
 /// Re-exported so downstream code can write custom servers for
-/// [`get_mock_address`].
+/// [`get_mock_address`]. Primarily useful with the `mocking` feature, which
+/// gates `get_mock_address` and the built-in test servers.
 pub use socket_loop::WebSocketStreamType;
 use socket_loop::{
     TerminalError, TxChannelPayload, poll_recv_raw, recv_raw, send_close, send_confirmed,

@@ -80,7 +80,8 @@ impl ConnectOptionsBuilder {
         self
     }
 
-    /// Append a single HTTP header to the WebSocket upgrade request.
+    /// Set a single HTTP header on the WebSocket upgrade request. If a header with
+    /// the same name was already set, its previous value is replaced.
     #[must_use]
     pub fn header<K: http::header::IntoHeaderName>(
         mut self,
@@ -145,8 +146,12 @@ mod tests {
         let mut map = http::HeaderMap::new();
         map.insert("a", "1".parse().unwrap());
         map.insert("b", "2".parse().unwrap());
-        let opts = ConnectOptions::builder().headers(map).build();
+        let opts = ConnectOptions::builder()
+            .header("z", "0".parse().unwrap())
+            .headers(map)
+            .build();
         assert_eq!(opts.extra_headers.len(), 2);
         assert_eq!(opts.extra_headers.get("a").unwrap(), "1");
+        assert!(opts.extra_headers.get("z").is_none());
     }
 }
