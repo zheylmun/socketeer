@@ -897,3 +897,51 @@ async fn test_backpressure_without_keepalive_preserves_frames() {
 
     socketeer.close_connection().await.unwrap();
 }
+
+#[tokio::test]
+async fn test_backpressure_allows_outgoing_sends() {
+    // Small buffer (2) < burst (5) parks the loop in backpressure while the
+    // consumer is not reading. A confirmed send issued in that window must still
+    // complete: it exercises the `receiver.recv()` arm of the backpressure loop,
+    // proving a slow receiver does not block the outgoing path. After that the
+    // held burst still drains in full and in order.
+    let server_address = get_mock_address(backpressure_probe_server).await;
+    let options = ConnectOptions {
+        keepalive_interval: Some(Duration::from_millis(100)),
+        ..ConnectOptions::default()
+    };
+    let mut socketeer: Socketeer<EchoJson, NoopHandler, 2> =
+        Socketeer::connect_with(&format!("ws://{server_address}"), options)
+            .await
+            .unwrap();
+
+    // Let the burst fill the buffer and park the loop in backpressure before we
+    // send, so the send is serviced from inside the backpressure loop rather
+    // than the outer select.
+    sleep(Duration::from_millis(200)).await;
+
+    // Confirmed send completes even though the receive buffer is full and the
+    // consumer has read nothing.
+    socketeer
+        .send(EchoControlMessage::Message("while-backpressured".into()))
+        .await
+        .unwrap();
+
+    let mut received = Vec::new();
+    for _ in 0..5 {
+        match timeout(Duration::from_secs(2), socketeer.next_message())
+            .await
+            .expect("burst frame should arrive, not hang")
+            .unwrap()
+        {
+            EchoControlMessage::Message(s) => received.push(s),
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+    assert_eq!(
+        received,
+        vec!["burst-0", "burst-1", "burst-2", "burst-3", "burst-4"]
+    );
+
+    socketeer.close_connection().await.unwrap();
+}
