@@ -4,6 +4,7 @@ use tokio_tungstenite::tungstenite::Message;
 /// Error type for the Socketeer library.
 /// This type is used to represent all possible external errors that can occur when using the Socketeer library.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Url Parse Error
     #[error("Failed to parse URL: {}", 0)]

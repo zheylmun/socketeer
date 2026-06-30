@@ -12,9 +12,10 @@ use tokio_tungstenite::tungstenite::Message;
 use futures::StreamExt;
 use socketeer::{
     Codec, ConnectOptions, ConnectionHandler, EchoControlMessage, Error, HandshakeContext,
-    JsonCodec, NoopHandler, RawCodec, Socketeer, auth_echo_server, backpressure_probe_server,
-    echo_server, get_mock_address,
+    JsonCodec, NoopHandler, RawCodec, Socketeer, auth_echo_server, echo_server, get_mock_address,
 };
+
+mod support;
 
 #[cfg(feature = "msgpack")]
 use socketeer::{MsgPackCodec, msgpack_echo_server};
@@ -166,10 +167,7 @@ async fn test_raw_codec_message_roundtrip() {
 #[tokio::test]
 async fn test_disabled_keepalive() {
     let server_address = get_mock_address(echo_server).await;
-    let options = ConnectOptions {
-        keepalive_interval: None,
-        ..ConnectOptions::default()
-    };
+    let options = ConnectOptions::builder().keepalive_interval(None).build();
     let mut socketeer: Socketeer<EchoJson> =
         Socketeer::connect_with(&format!("ws://{server_address}"), options)
             .await
@@ -388,12 +386,9 @@ async fn test_extra_headers_used() {
     // Cover ConnectOptions::build_request's loop body that copies
     // `extra_headers` onto the upgrade request.
     let server_address = get_mock_address(echo_server).await;
-    let mut headers = tokio_tungstenite::tungstenite::http::HeaderMap::new();
-    headers.insert("X-Test-Header", "socketeer".parse().unwrap());
-    let options = ConnectOptions {
-        extra_headers: headers,
-        ..ConnectOptions::default()
-    };
+    let options = ConnectOptions::builder()
+        .header("X-Test-Header", "socketeer".parse().unwrap())
+        .build();
     let mut socketeer: Socketeer<EchoJson> =
         Socketeer::connect_with(&format!("ws://{server_address}"), options)
             .await
@@ -761,11 +756,10 @@ async fn test_backpressure_probe_server_delivers_burst_and_marker() {
     // Large buffer (16) > burst (5): no backpressure. Validates the probe
     // server — the client buffers the burst, goes idle, and its keepalive ping
     // prompts the "alive" marker. Passes on the unmodified loop.
-    let server_address = get_mock_address(backpressure_probe_server).await;
-    let options = ConnectOptions {
-        keepalive_interval: Some(Duration::from_millis(100)),
-        ..ConnectOptions::default()
-    };
+    let server_address = get_mock_address(support::backpressure_probe_server).await;
+    let options = ConnectOptions::builder()
+        .keepalive_interval(Some(Duration::from_millis(100)))
+        .build();
     let mut socketeer: Socketeer<EchoJson, NoopHandler, 16> =
         Socketeer::connect_with(&format!("ws://{server_address}"), options)
             .await
@@ -796,11 +790,10 @@ async fn test_binary_custom_keepalive() {
     // ignores Binary frames, so the receive queue stays clean and we can
     // verify the connection survives a binary keepalive cycle.
     let server_address = get_mock_address(echo_server).await;
-    let options = ConnectOptions {
-        keepalive_interval: Some(Duration::from_millis(100)),
-        custom_keepalive_message: Some(Message::Binary(Bytes::from_static(b"keepalive"))),
-        ..ConnectOptions::default()
-    };
+    let options = ConnectOptions::builder()
+        .keepalive_interval(Some(Duration::from_millis(100)))
+        .custom_keepalive_message(Some(Message::Binary(Bytes::from_static(b"keepalive"))))
+        .build();
     let mut socketeer: Socketeer<EchoJson> =
         Socketeer::connect_with(&format!("ws://{server_address}"), options)
             .await
@@ -823,11 +816,10 @@ async fn test_backpressure_keeps_protocol_alive() {
     // if no ping arrives within 500ms). On the pre-backpressure loop the loop
     // is blocked on a full-channel send and sends no ping until the drain at
     // 800ms — past the server's window — so the marker never comes.
-    let server_address = get_mock_address(backpressure_probe_server).await;
-    let options = ConnectOptions {
-        keepalive_interval: Some(Duration::from_millis(100)),
-        ..ConnectOptions::default()
-    };
+    let server_address = get_mock_address(support::backpressure_probe_server).await;
+    let options = ConnectOptions::builder()
+        .keepalive_interval(Some(Duration::from_millis(100)))
+        .build();
     let mut socketeer: Socketeer<EchoJson, NoopHandler, 2> =
         Socketeer::connect_with(&format!("ws://{server_address}"), options)
             .await
@@ -866,11 +858,8 @@ async fn test_backpressure_without_keepalive_preserves_frames() {
     // The consumer pauses, then drains: every burst frame must still arrive in
     // order with zero loss. (No keepalive => no ping => the server never emits
     // the "alive" marker, so we only assert the burst.)
-    let server_address = get_mock_address(backpressure_probe_server).await;
-    let options = ConnectOptions {
-        keepalive_interval: None,
-        ..ConnectOptions::default()
-    };
+    let server_address = get_mock_address(support::backpressure_probe_server).await;
+    let options = ConnectOptions::builder().keepalive_interval(None).build();
     let mut socketeer: Socketeer<EchoJson, NoopHandler, 2> =
         Socketeer::connect_with(&format!("ws://{server_address}"), options)
             .await
@@ -905,11 +894,10 @@ async fn test_backpressure_allows_outgoing_sends() {
     // complete: it exercises the `receiver.recv()` arm of the backpressure loop,
     // proving a slow receiver does not block the outgoing path. After that the
     // held burst still drains in full and in order.
-    let server_address = get_mock_address(backpressure_probe_server).await;
-    let options = ConnectOptions {
-        keepalive_interval: Some(Duration::from_millis(100)),
-        ..ConnectOptions::default()
-    };
+    let server_address = get_mock_address(support::backpressure_probe_server).await;
+    let options = ConnectOptions::builder()
+        .keepalive_interval(Some(Duration::from_millis(100)))
+        .build();
     let mut socketeer: Socketeer<EchoJson, NoopHandler, 2> =
         Socketeer::connect_with(&format!("ws://{server_address}"), options)
             .await

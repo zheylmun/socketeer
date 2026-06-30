@@ -74,9 +74,10 @@ use std::time::Duration;
 # struct Msg { text: String }
 # #[tokio::main]
 # async fn main() {
-let mut options = ConnectOptions::default();
-options.extra_headers.insert("Authorization", "Bearer my-token".parse().unwrap());
-options.keepalive_interval = Some(Duration::from_secs(10));
+let options = ConnectOptions::builder()
+    .header("Authorization", "Bearer my-token".parse().unwrap())
+    .keepalive_interval(Some(Duration::from_secs(10)))
+    .build();
 
 let socketeer: Socketeer<JsonCodec<Msg, Msg>> =
     Socketeer::connect_with("wss://api.example.com/ws", options)
