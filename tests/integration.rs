@@ -858,3 +858,42 @@ async fn test_backpressure_keeps_protocol_alive() {
 
     socketeer.close_connection().await.unwrap();
 }
+
+#[tokio::test]
+async fn test_backpressure_without_keepalive_preserves_frames() {
+    // Small buffer (2) < burst (5) forces backpressure, and keepalives are
+    // disabled — exercising the no-keepalive arm of `deliver_with_backpressure`.
+    // The consumer pauses, then drains: every burst frame must still arrive in
+    // order with zero loss. (No keepalive => no ping => the server never emits
+    // the "alive" marker, so we only assert the burst.)
+    let server_address = get_mock_address(backpressure_probe_server).await;
+    let options = ConnectOptions {
+        keepalive_interval: None,
+        ..ConnectOptions::default()
+    };
+    let mut socketeer: Socketeer<EchoJson, NoopHandler, 2> =
+        Socketeer::connect_with(&format!("ws://{server_address}"), options)
+            .await
+            .unwrap();
+
+    // Let the burst fill the buffer and park the loop in backpressure.
+    sleep(Duration::from_millis(200)).await;
+
+    let mut received = Vec::new();
+    for _ in 0..5 {
+        match timeout(Duration::from_secs(2), socketeer.next_message())
+            .await
+            .expect("burst frame should arrive, not hang")
+            .unwrap()
+        {
+            EchoControlMessage::Message(s) => received.push(s),
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+    assert_eq!(
+        received,
+        vec!["burst-0", "burst-1", "burst-2", "burst-3", "burst-4"]
+    );
+
+    socketeer.close_connection().await.unwrap();
+}
