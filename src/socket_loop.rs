@@ -234,9 +234,10 @@ async fn send_socket_message(
         let send_result = sink.send(message.message).await.map_err(Error::from);
         let socket_error = send_result.is_err();
         if let Some(response_tx) = message.response_tx
-            && response_tx.send(send_result).is_err() {
-                return LoopState::Error(Error::SocketeerDroppedWithoutClosing);
-            }
+            && response_tx.send(send_result).is_err()
+        {
+            return LoopState::Error(Error::SocketeerDroppedWithoutClosing);
+        }
         if socket_error {
             LoopState::Error(Error::WebsocketClosed)
         } else {
