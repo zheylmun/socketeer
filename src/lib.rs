@@ -9,6 +9,7 @@ mod mock_server;
 mod socket_loop;
 mod split;
 
+pub use bytes::Bytes;
 #[cfg(feature = "msgpack")]
 pub use codec::MsgPackCodec;
 pub use codec::{Codec, JsonCodec, RawCodec};
@@ -22,8 +23,12 @@ pub use mock_server::{
     EchoControlMessage, auth_echo_server, backpressure_probe_server, echo_server, get_mock_address,
 };
 pub use split::{ReuniteError, SocketeerRx, SocketeerTx};
+pub use tokio_tungstenite::tungstenite::{self, Message, http};
 
-pub(crate) use socket_loop::WebSocketStreamType;
+/// The concrete `WebSocketStream` type the mock-server handlers operate on.
+/// Re-exported so downstream code can write custom servers for
+/// [`get_mock_address`].
+pub use socket_loop::WebSocketStreamType;
 use socket_loop::{
     TerminalError, TxChannelPayload, poll_recv_raw, recv_raw, send_close, send_confirmed,
     socket_loop_split,
@@ -35,7 +40,7 @@ use std::task::{Context, Poll};
 
 use futures::{Stream, StreamExt};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::connect_async;
 
 #[cfg(feature = "tracing")]
 use tracing::{debug, info, instrument};

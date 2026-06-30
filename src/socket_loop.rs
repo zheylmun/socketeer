@@ -37,7 +37,10 @@ pub(crate) struct TxChannelPayload {
     pub(crate) response_tx: Option<oneshot::Sender<Result<(), Error>>>,
 }
 
-pub(crate) type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>;
+/// The concrete `WebSocketStream` type the mock-server handlers operate on.
+/// Re-exported so downstream code can write custom servers for
+/// [`get_mock_address`](crate::get_mock_address).
+pub type WebSocketStreamType = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type SocketSink = SplitSink<WebSocketStreamType, Message>;
 type SocketStream = SplitStream<WebSocketStreamType>;
 
