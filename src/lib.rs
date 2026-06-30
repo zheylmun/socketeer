@@ -19,9 +19,7 @@ pub use handler::{ConnectionHandler, HandshakeContext, NoopHandler};
 #[cfg(all(feature = "mocking", feature = "msgpack"))]
 pub use mock_server::msgpack_echo_server;
 #[cfg(feature = "mocking")]
-pub use mock_server::{
-    EchoControlMessage, auth_echo_server, backpressure_probe_server, echo_server, get_mock_address,
-};
+pub use mock_server::{EchoControlMessage, auth_echo_server, echo_server, get_mock_address};
 pub use split::{ReuniteError, SocketeerRx, SocketeerTx};
 pub use tokio_tungstenite::tungstenite::{self, Message, http};
 

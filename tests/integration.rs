@@ -12,9 +12,10 @@ use tokio_tungstenite::tungstenite::Message;
 use futures::StreamExt;
 use socketeer::{
     Codec, ConnectOptions, ConnectionHandler, EchoControlMessage, Error, HandshakeContext,
-    JsonCodec, NoopHandler, RawCodec, Socketeer, auth_echo_server, backpressure_probe_server,
-    echo_server, get_mock_address,
+    JsonCodec, NoopHandler, RawCodec, Socketeer, auth_echo_server, echo_server, get_mock_address,
 };
+
+mod support;
 
 #[cfg(feature = "msgpack")]
 use socketeer::{MsgPackCodec, msgpack_echo_server};
@@ -755,7 +756,7 @@ async fn test_backpressure_probe_server_delivers_burst_and_marker() {
     // Large buffer (16) > burst (5): no backpressure. Validates the probe
     // server — the client buffers the burst, goes idle, and its keepalive ping
     // prompts the "alive" marker. Passes on the unmodified loop.
-    let server_address = get_mock_address(backpressure_probe_server).await;
+    let server_address = get_mock_address(support::backpressure_probe_server).await;
     let options = ConnectOptions::builder()
         .keepalive_interval(Some(Duration::from_millis(100)))
         .build();
@@ -815,7 +816,7 @@ async fn test_backpressure_keeps_protocol_alive() {
     // if no ping arrives within 500ms). On the pre-backpressure loop the loop
     // is blocked on a full-channel send and sends no ping until the drain at
     // 800ms — past the server's window — so the marker never comes.
-    let server_address = get_mock_address(backpressure_probe_server).await;
+    let server_address = get_mock_address(support::backpressure_probe_server).await;
     let options = ConnectOptions::builder()
         .keepalive_interval(Some(Duration::from_millis(100)))
         .build();
@@ -857,7 +858,7 @@ async fn test_backpressure_without_keepalive_preserves_frames() {
     // The consumer pauses, then drains: every burst frame must still arrive in
     // order with zero loss. (No keepalive => no ping => the server never emits
     // the "alive" marker, so we only assert the burst.)
-    let server_address = get_mock_address(backpressure_probe_server).await;
+    let server_address = get_mock_address(support::backpressure_probe_server).await;
     let options = ConnectOptions::builder().keepalive_interval(None).build();
     let mut socketeer: Socketeer<EchoJson, NoopHandler, 2> =
         Socketeer::connect_with(&format!("ws://{server_address}"), options)
@@ -893,7 +894,7 @@ async fn test_backpressure_allows_outgoing_sends() {
     // complete: it exercises the `receiver.recv()` arm of the backpressure loop,
     // proving a slow receiver does not block the outgoing path. After that the
     // held burst still drains in full and in order.
-    let server_address = get_mock_address(backpressure_probe_server).await;
+    let server_address = get_mock_address(support::backpressure_probe_server).await;
     let options = ConnectOptions::builder()
         .keepalive_interval(Some(Duration::from_millis(100)))
         .build();
