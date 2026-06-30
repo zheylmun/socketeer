@@ -11,6 +11,7 @@
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::{
     net::TcpStream,
@@ -117,6 +118,42 @@ pub(crate) async fn send_close(sender: &mpsc::Sender<TxChannelPayload>) -> Resul
     match rx.await {
         Ok(result) => result,
         Err(_) => unreachable!("Socket loop always sends response before dropping one-shot"),
+    }
+}
+
+/// Await the next inbound data frame, mapping a closed channel to the loop's
+/// recorded terminal cause. The async counterpart to [`send_confirmed`]: both
+/// honor the same terminal-error contract so the handle and its split half share
+/// one receive path.
+pub(crate) async fn recv_raw(
+    receiver: &mut mpsc::Receiver<Message>,
+    terminal_error: &TerminalError,
+) -> Result<Message, Error> {
+    match receiver.recv().await {
+        Some(message) => {
+            #[cfg(feature = "tracing")]
+            trace!("Received message: {:?}", message);
+            Ok(message)
+        }
+        None => Err(take_terminal_error(terminal_error)),
+    }
+}
+
+/// Poll for the next inbound data frame, for `Stream` implementations. A closed
+/// channel surfaces the recorded terminal cause once (subsequent polls see the
+/// stream end). The polling counterpart to [`recv_raw`].
+pub(crate) fn poll_recv_raw(
+    receiver: &mut mpsc::Receiver<Message>,
+    terminal_error: &TerminalError,
+    cx: &mut Context<'_>,
+) -> Poll<Option<Result<Message, Error>>> {
+    match receiver.poll_recv(cx) {
+        Poll::Ready(Some(message)) => Poll::Ready(Some(Ok(message))),
+        Poll::Ready(None) => match take_terminal_error_opt(terminal_error) {
+            Some(error) => Poll::Ready(Some(Err(error))),
+            None => Poll::Ready(None),
+        },
+        Poll::Pending => Poll::Pending,
     }
 }
 

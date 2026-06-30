@@ -16,8 +16,8 @@ use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
 use crate::socket_loop::{
-    TerminalError, TxChannelPayload, send_close, send_confirmed, send_unconfirmed,
-    take_terminal_error, take_terminal_error_opt,
+    TerminalError, TxChannelPayload, poll_recv_raw, recv_raw, send_close, send_confirmed,
+    send_unconfirmed,
 };
 use crate::{Codec, ConnectOptions, ConnectionHandler, Error, NoopHandler, Socketeer};
 
@@ -131,20 +131,15 @@ where
     /// - If the connection is closed or errored
     /// - If the codec fails to decode the frame
     pub async fn next_message(&mut self) -> Result<C::Rx, Error> {
-        match self.receiver.recv().await {
-            Some(message) => self.codec.decode(&message),
-            None => Err(take_terminal_error(&self.terminal_error)),
-        }
+        let message = recv_raw(&mut self.receiver, &self.terminal_error).await?;
+        self.codec.decode(&message)
     }
 
     /// Wait for the next raw [`Message`] without decoding.
     /// # Errors
     /// - If the connection is closed or errored
     pub async fn next_raw_message(&mut self) -> Result<Message, Error> {
-        match self.receiver.recv().await {
-            Some(message) => Ok(message),
-            None => Err(take_terminal_error(&self.terminal_error)),
-        }
+        recv_raw(&mut self.receiver, &self.terminal_error).await
     }
 
     /// Recombine with a [`SocketeerTx`] to restore the full
@@ -227,16 +222,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        match this.receiver.poll_recv(cx) {
-            Poll::Ready(Some(message)) => Poll::Ready(Some(this.codec.decode(&message))),
-            Poll::Ready(None) => {
-                // Channel closed: surface the recorded cause once, then end.
-                match take_terminal_error_opt(&this.terminal_error) {
-                    Some(error) => Poll::Ready(Some(Err(error))),
-                    None => Poll::Ready(None),
-                }
-            }
-            Poll::Pending => Poll::Pending,
-        }
+        poll_recv_raw(&mut this.receiver, &this.terminal_error, cx)
+            .map(|frame| frame.map(|result| result.and_then(|message| this.codec.decode(&message))))
     }
 }

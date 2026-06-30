@@ -24,7 +24,10 @@ pub use mock_server::{
 pub use split::{ReuniteError, SocketeerRx, SocketeerTx};
 
 pub(crate) use socket_loop::WebSocketStreamType;
-use socket_loop::{TerminalError, TxChannelPayload, send_close, send_confirmed, socket_loop_split};
+use socket_loop::{
+    TerminalError, TxChannelPayload, poll_recv_raw, recv_raw, send_close, send_confirmed,
+    socket_loop_split,
+};
 
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -35,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[cfg(feature = "tracing")]
-use tracing::{debug, info, instrument, trace};
+use tracing::{debug, info, instrument};
 use url::Url;
 
 /// A WebSocket client that manages the connection to a WebSocket server.
@@ -89,14 +92,8 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        match this.receiver.poll_recv(cx) {
-            Poll::Ready(Some(message)) => Poll::Ready(Some(this.codec.decode(&message))),
-            Poll::Ready(None) => match socket_loop::take_terminal_error_opt(&this.terminal_error) {
-                Some(error) => Poll::Ready(Some(Err(error))),
-                None => Poll::Ready(None),
-            },
-            Poll::Pending => Poll::Pending,
-        }
+        poll_recv_raw(&mut this.receiver, &this.terminal_error, cx)
+            .map(|frame| frame.map(|result| result.and_then(|message| this.codec.decode(&message))))
     }
 }
 
@@ -228,22 +225,8 @@ where
     /// - If the codec fails to decode the frame
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn next_message(&mut self) -> Result<C::Rx, Error> {
-        let Some(message) = self.receiver.recv().await else {
-            return Err(self.take_terminal_error());
-        };
-        #[cfg(feature = "tracing")]
-        trace!("Received message: {:?}", message);
+        let message = recv_raw(&mut self.receiver, &self.terminal_error).await?;
         self.codec.decode(&message)
-    }
-
-    /// Report the error the socket loop recorded when it terminated, falling
-    /// back to the generic [`Error::WebsocketClosed`] for a graceful close (or
-    /// once the cause has already been taken).
-    ///
-    /// The cause is surfaced once: the first caller to observe the closed
-    /// connection consumes it, and subsequent observers see `WebsocketClosed`.
-    fn take_terminal_error(&self) -> Error {
-        socket_loop::take_terminal_error(&self.terminal_error)
     }
 
     /// Encode and send a message via the connection's [`Codec`].
@@ -269,10 +252,7 @@ where
     ///
     /// - If the WebSocket connection is closed or otherwise errored
     pub async fn next_raw_message(&mut self) -> Result<Message, Error> {
-        match self.receiver.recv().await {
-            Some(message) => Ok(message),
-            None => Err(self.take_terminal_error()),
-        }
+        recv_raw(&mut self.receiver, &self.terminal_error).await
     }
 
     /// Send a raw [`Message`] to the WebSocket connection without running the codec.
